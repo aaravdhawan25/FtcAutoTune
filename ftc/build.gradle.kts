@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.aaravdhawan25.pidautotuner.ftc"
-    compileSdk = 34
+    compileSdk = 30
 
     defaultConfig {
         minSdk = 24

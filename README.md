@@ -38,19 +38,16 @@ FtcAutoTune/
               PositionPIDTunerOpMode, VelocityPIDFTunerOpMode, TuningConfig
 ```
 
-## Initial setup (one-time)
+## Initial setup
 
-This project ships `gradle/wrapper/gradle-wrapper.properties` but not the
-`gradlew` / `gradlew.bat` scripts or `gradle-wrapper.jar` (they're binary/
-generated files). To generate them, either:
+The Gradle wrapper (`gradlew`, `gradlew.bat`, `gradle-wrapper.jar`, pinned to
+Gradle 8.9) and `jitpack.yml` (pins the build to JDK 17, required by AGP 8.7)
+are committed, so JitPack can build this repo with no extra setup.
 
-- Open the project folder in Android Studio -- it will offer to generate the
-  wrapper automatically on first sync, or
-- Run `gradle wrapper --gradle-version 8.7` once if you have a system Gradle
-  install.
-
-JitPack also works fine without a committed wrapper as long as it can resolve
-the Android Gradle Plugin and AGP version declared in `build.gradle.kts`.
+If you change `compileSdk` in `ftc/build.gradle.kts`, make sure it stays
+**less than or equal to** the `compileSdkVersion` of whatever app consumes
+this library (currently 30 in the FtcRobotController quickstart) -- a library
+with a higher `compileSdk` than its consumer will fail to build.
 
 ## Publishing this library (JitPack), so TeamCode can use it like Pedro Pathing
 
