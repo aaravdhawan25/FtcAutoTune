@@ -22,9 +22,13 @@ import java.util.List;
  *
  * <h2>Setup</h2>
  * <ol>
- *     <li>Edit {@link TuningConfig} -- set {@code MOTOR_NAME},
- *         {@code VELOCITY_TARGET_TICKS_PER_SEC} to roughly your real shooting
- *         speed, and check {@code REVERSED}.</li>
+ *     <li>Add a {@code TuningConfig.java} class at
+ *         {@code org.firstinspires.ftc.teamcode.TuningConfig} in your
+ *         TeamCode (see the FtcAutoTune README for the template). Set
+ *         {@code MOTOR_NAME}, {@code VELOCITY_TARGET_TICKS_PER_SEC} to
+ *         roughly your real shooting speed, and check {@code REVERSED}. If
+ *         you don't add this class, built-in defaults from
+ *         {@link TuningConfigLoader} are used instead.</li>
  *     <li>Run this OpMode. Press start.</li>
  *     <li><b>Phase 1 (relay test):</b> the motor will rapidly switch between
  *         full power and zero/reverse power, oscillating its velocity around
@@ -54,8 +58,20 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
 
     @Override
     public void runOpMode() {
-        DcMotorEx motor = hardwareMap.get(DcMotorEx.class, TuningConfig.MOTOR_NAME);
-        motor.setDirection(TuningConfig.REVERSED
+        String motorName = TuningConfigLoader.getString("MOTOR_NAME", TuningConfigLoader.DEFAULT_MOTOR_NAME);
+        boolean reversed = TuningConfigLoader.getBoolean("REVERSED", TuningConfigLoader.DEFAULT_REVERSED);
+        double relayAmplitude = TuningConfigLoader.getDouble("RELAY_AMPLITUDE", TuningConfigLoader.DEFAULT_RELAY_AMPLITUDE);
+        int cyclesToCollect = TuningConfigLoader.getInt("CYCLES_TO_COLLECT", TuningConfigLoader.DEFAULT_CYCLES_TO_COLLECT);
+        int cyclesToIgnore = TuningConfigLoader.getInt("CYCLES_TO_IGNORE", TuningConfigLoader.DEFAULT_CYCLES_TO_IGNORE);
+        double relayTestTimeoutS = TuningConfigLoader.getDouble("RELAY_TEST_TIMEOUT_S", TuningConfigLoader.DEFAULT_RELAY_TEST_TIMEOUT_S);
+        double velocityTargetTicksPerSec = TuningConfigLoader.getDouble("VELOCITY_TARGET_TICKS_PER_SEC", TuningConfigLoader.DEFAULT_VELOCITY_TARGET_TICKS_PER_SEC);
+        double velocityHysteresisTicksPerSec = TuningConfigLoader.getDouble("VELOCITY_HYSTERESIS_TICKS_PER_SEC", TuningConfigLoader.DEFAULT_VELOCITY_HYSTERESIS_TICKS_PER_SEC);
+        double[] feedforwardTestPowers = TuningConfigLoader.getDoubleArray("FEEDFORWARD_TEST_POWERS", TuningConfigLoader.DEFAULT_FEEDFORWARD_TEST_POWERS);
+        double feedforwardSettleTimeS = TuningConfigLoader.getDouble("FEEDFORWARD_SETTLE_TIME_S", TuningConfigLoader.DEFAULT_FEEDFORWARD_SETTLE_TIME_S);
+        boolean tuneIntegralTerm = TuningConfigLoader.getBoolean("TUNE_INTEGRAL_TERM", TuningConfigLoader.DEFAULT_TUNE_INTEGRAL_TERM);
+
+        DcMotorEx motor = hardwareMap.get(DcMotorEx.class, motorName);
+        motor.setDirection(reversed
                 ? DcMotorSimple.Direction.REVERSE
                 : DcMotorSimple.Direction.FORWARD);
         motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
@@ -63,8 +79,12 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
         motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
         telemetry.addLine("=== PIDF Auto Tuner (Velocity) ===");
-        telemetry.addData("Motor", TuningConfig.MOTOR_NAME);
-        telemetry.addData("Target velocity (ticks/s)", TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC);
+        if (!TuningConfigLoader.userConfigFound()) {
+            telemetry.addLine("(No org.firstinspires.ftc.teamcode.TuningConfig found");
+            telemetry.addLine(" -- using built-in defaults. See FtcAutoTune README.)");
+        }
+        telemetry.addData("Motor", motorName);
+        telemetry.addData("Target velocity (ticks/s)", velocityTargetTicksPerSec);
         telemetry.addLine("Press START. Phase 1: relay test (automatic).");
         telemetry.update();
 
@@ -74,11 +94,11 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
         // ---------------- Phase 1: relay test for Ku / Tu ----------------
 
         RelayAutoTuner tuner = new RelayAutoTuner(
-                TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC,
-                TuningConfig.RELAY_AMPLITUDE,
-                TuningConfig.VELOCITY_HYSTERESIS_TICKS_PER_SEC,
-                TuningConfig.CYCLES_TO_COLLECT,
-                TuningConfig.CYCLES_TO_IGNORE
+                velocityTargetTicksPerSec,
+                relayAmplitude,
+                velocityHysteresisTicksPerSec,
+                cyclesToCollect,
+                cyclesToIgnore
         );
 
         ElapsedTime timer = new ElapsedTime();
@@ -92,13 +112,13 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
 
             telemetry.addLine("=== Phase 1: Relay Test ===");
             telemetry.addData("Velocity (ticks/s)", "%.1f", velocity);
-            telemetry.addData("Target (ticks/s)", "%.1f", TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC);
+            telemetry.addData("Target (ticks/s)", "%.1f", velocityTargetTicksPerSec);
             telemetry.addData("Cycles collected", "%d / %d", tuner.cyclesCollected(),
-                    TuningConfig.CYCLES_TO_COLLECT + TuningConfig.CYCLES_TO_IGNORE);
+                    cyclesToCollect + cyclesToIgnore);
             telemetry.addData("Elapsed (s)", "%.1f", now);
             telemetry.update();
 
-            if (now > TuningConfig.RELAY_TEST_TIMEOUT_S) {
+            if (now > relayTestTimeoutS) {
                 timedOut = true;
                 break;
             }
@@ -132,20 +152,20 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
 
         FeedforwardCharacterizer ff = new FeedforwardCharacterizer();
 
-        for (double power : TuningConfig.FEEDFORWARD_TEST_POWERS) {
+        for (double power : feedforwardTestPowers) {
             if (!opModeIsActive()) break;
 
             motor.setPower(power);
             ElapsedTime settleTimer = new ElapsedTime();
             double lastVelocity = 0;
 
-            while (opModeIsActive() && settleTimer.seconds() < TuningConfig.FEEDFORWARD_SETTLE_TIME_S) {
+            while (opModeIsActive() && settleTimer.seconds() < feedforwardSettleTimeS) {
                 lastVelocity = motor.getVelocity();
                 telemetry.addLine("=== Phase 2: Feedforward Sweep ===");
                 telemetry.addData("Testing power", "%.2f", power);
                 telemetry.addData("Velocity (ticks/s)", "%.1f", lastVelocity);
                 telemetry.addData("Settling", "%.1f / %.1f s",
-                        settleTimer.seconds(), TuningConfig.FEEDFORWARD_SETTLE_TIME_S);
+                        settleTimer.seconds(), feedforwardSettleTimeS);
                 telemetry.update();
             }
 
@@ -160,9 +180,10 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
             kF = 0.0; // fall back to no feedforward if characterization failed
         }
 
-        List<PIDGains> candidates = ZieglerNicholsCalculator.computeCandidates(result, kF);
+        List<PIDGains> candidates = ZieglerNicholsCalculator.computeCandidates(result, kF, tuneIntegralTerm);
 
-        // Default to the "classic ZN" candidate for the live test.
+        // Default to the "classic ZN" candidate for the live test (index 4 in
+        // both the PID and PD candidate families).
         PIDGains liveTestGains = candidates.get(4);
         PIDFController liveController = PIDFController.fromGains(liveTestGains);
         liveController.setOutputBounds(-1.0, 1.0);
@@ -198,14 +219,14 @@ public class VelocityPIDFTunerOpMode extends LinearOpMode {
                 }
                 double velocity = motor.getVelocity();
                 double output = liveController.calculate(
-                        TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC, velocity, timer.seconds());
+                        velocityTargetTicksPerSec, velocity, timer.seconds());
                 motor.setPower(output);
 
                 telemetry.addLine();
                 telemetry.addLine("=== LIVE TEST ACTIVE ===");
                 telemetry.addData("Velocity (ticks/s)", "%.1f", velocity);
-                telemetry.addData("Target (ticks/s)", "%.1f", TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC);
-                telemetry.addData("Error", "%.1f", TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC - velocity);
+                telemetry.addData("Target (ticks/s)", "%.1f", velocityTargetTicksPerSec);
+                telemetry.addData("Error", "%.1f", velocityTargetTicksPerSec - velocity);
                 telemetry.addData("Output power", "%.3f", output);
             } else {
                 if (liveTestRunning) {

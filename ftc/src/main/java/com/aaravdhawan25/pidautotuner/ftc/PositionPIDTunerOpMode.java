@@ -20,8 +20,12 @@ import java.util.List;
  *
  * <h2>Setup</h2>
  * <ol>
- *     <li>Edit {@link TuningConfig} -- set {@code MOTOR_NAME},
- *         {@code POSITION_TARGET_TICKS}, and check {@code REVERSED}.</li>
+ *     <li>Add a {@code TuningConfig.java} class at
+ *         {@code org.firstinspires.ftc.teamcode.TuningConfig} in your
+ *         TeamCode (see the FtcAutoTune README for the template). Set
+ *         {@code MOTOR_NAME}, {@code POSITION_TARGET_TICKS}, and check
+ *         {@code REVERSED}. If you don't add this class, built-in defaults
+ *         from {@link TuningConfigLoader} are used instead.</li>
  *     <li>Make sure the mechanism can safely move
  *         {@code +/- POSITION_TARGET_TICKS} from its current position without
  *         hitting hard stops -- the relay test will oscillate across that
@@ -46,8 +50,17 @@ public class PositionPIDTunerOpMode extends LinearOpMode {
 
     @Override
     public void runOpMode() {
-        DcMotorEx motor = hardwareMap.get(DcMotorEx.class, TuningConfig.MOTOR_NAME);
-        motor.setDirection(TuningConfig.REVERSED
+        String motorName = TuningConfigLoader.getString("MOTOR_NAME", TuningConfigLoader.DEFAULT_MOTOR_NAME);
+        boolean reversed = TuningConfigLoader.getBoolean("REVERSED", TuningConfigLoader.DEFAULT_REVERSED);
+        double relayAmplitude = TuningConfigLoader.getDouble("RELAY_AMPLITUDE", TuningConfigLoader.DEFAULT_RELAY_AMPLITUDE);
+        int cyclesToCollect = TuningConfigLoader.getInt("CYCLES_TO_COLLECT", TuningConfigLoader.DEFAULT_CYCLES_TO_COLLECT);
+        int cyclesToIgnore = TuningConfigLoader.getInt("CYCLES_TO_IGNORE", TuningConfigLoader.DEFAULT_CYCLES_TO_IGNORE);
+        double relayTestTimeoutS = TuningConfigLoader.getDouble("RELAY_TEST_TIMEOUT_S", TuningConfigLoader.DEFAULT_RELAY_TEST_TIMEOUT_S);
+        double positionTargetTicks = TuningConfigLoader.getDouble("POSITION_TARGET_TICKS", TuningConfigLoader.DEFAULT_POSITION_TARGET_TICKS);
+        double positionHysteresisTicks = TuningConfigLoader.getDouble("POSITION_HYSTERESIS_TICKS", TuningConfigLoader.DEFAULT_POSITION_HYSTERESIS_TICKS);
+
+        DcMotorEx motor = hardwareMap.get(DcMotorEx.class, motorName);
+        motor.setDirection(reversed
                 ? DcMotorSimple.Direction.REVERSE
                 : DcMotorSimple.Direction.FORWARD);
         motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
@@ -55,8 +68,12 @@ public class PositionPIDTunerOpMode extends LinearOpMode {
         motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
         telemetry.addLine("=== PID Auto Tuner (Position) ===");
-        telemetry.addData("Motor", TuningConfig.MOTOR_NAME);
-        telemetry.addData("Target offset (ticks)", TuningConfig.POSITION_TARGET_TICKS);
+        if (!TuningConfigLoader.userConfigFound()) {
+            telemetry.addLine("(No org.firstinspires.ftc.teamcode.TuningConfig found");
+            telemetry.addLine(" -- using built-in defaults. See FtcAutoTune README.)");
+        }
+        telemetry.addData("Motor", motorName);
+        telemetry.addData("Target offset (ticks)", positionTargetTicks);
         telemetry.addLine("Press START. The mechanism will oscillate on its own.");
         telemetry.update();
 
@@ -64,14 +81,14 @@ public class PositionPIDTunerOpMode extends LinearOpMode {
         if (isStopRequested()) return;
 
         int startPosition = motor.getCurrentPosition();
-        double setpoint = startPosition + TuningConfig.POSITION_TARGET_TICKS;
+        double setpoint = startPosition + positionTargetTicks;
 
         RelayAutoTuner tuner = new RelayAutoTuner(
                 setpoint,
-                TuningConfig.RELAY_AMPLITUDE,
-                TuningConfig.POSITION_HYSTERESIS_TICKS,
-                TuningConfig.CYCLES_TO_COLLECT,
-                TuningConfig.CYCLES_TO_IGNORE
+                relayAmplitude,
+                positionHysteresisTicks,
+                cyclesToCollect,
+                cyclesToIgnore
         );
 
         ElapsedTime timer = new ElapsedTime();
@@ -87,11 +104,11 @@ public class PositionPIDTunerOpMode extends LinearOpMode {
             telemetry.addData("Position", position);
             telemetry.addData("Setpoint", "%.1f", setpoint);
             telemetry.addData("Cycles collected", "%d / %d", tuner.cyclesCollected(),
-                    TuningConfig.CYCLES_TO_COLLECT + TuningConfig.CYCLES_TO_IGNORE);
+                    cyclesToCollect + cyclesToIgnore);
             telemetry.addData("Elapsed (s)", "%.1f", now);
             telemetry.update();
 
-            if (now > TuningConfig.RELAY_TEST_TIMEOUT_S) {
+            if (now > relayTestTimeoutS) {
                 timedOut = true;
                 break;
             }
@@ -120,7 +137,8 @@ public class PositionPIDTunerOpMode extends LinearOpMode {
             return;
         }
 
-        List<PIDGains> candidates = ZieglerNicholsCalculator.computeCandidates(result, 0.0);
+        boolean tuneIntegralTerm = TuningConfigLoader.getBoolean("TUNE_INTEGRAL_TERM", TuningConfigLoader.DEFAULT_TUNE_INTEGRAL_TERM);
+        List<PIDGains> candidates = ZieglerNicholsCalculator.computeCandidates(result, 0.0, tuneIntegralTerm);
 
         // Default to the "no overshoot" candidate (index 2) for the live test --
         // safest starting point for arms/lifts.

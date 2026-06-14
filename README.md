@@ -32,10 +32,13 @@ Controllers"; Astrom & Hagglund (1984) relay-feedback auto-tuning.
 
 ```
 FtcAutoTune/
+├── core/   - pure Java: RelayAutoTuner, ZieglerNicholsCalculator,
 │             PIDFController, FeedforwardCharacterizer, PIDGains, RelayTuningResult
 │             (unit tested, no FTC SDK dependency)
-└── ftc/    - Android library, FTC SDK compileOnly:
-              PositionPIDTunerOpMode, VelocityPIDFTunerOpMode, TuningConfig
+├── ftc/    - Android library, FTC SDK compileOnly:
+│             PositionPIDTunerOpMode, VelocityPIDFTunerOpMode, TuningConfigLoader
+└── templates/
+              TuningConfig.java.template - copy this ONE file into your TeamCode
 ```
 
 ## Initial setup
@@ -69,8 +72,8 @@ with a higher `compileSdk` than its consumer will fail to build.
 
    ```groovy
    dependencies {
-       implementation 'com.github.aaravdhawan25.FtcAutoTune:pidautotuner-core:v0.1.0'
-       implementation 'com.github.aaravdhawan25.FtcAutoTune:pidautotuner-ftc:v0.1.0' // OpModes (depends on core)
+       implementation 'com.github.aaravdhawan25.FtcAutoTune:pidautotuner-core:v0.2.0'
+       implementation 'com.github.aaravdhawan25.FtcAutoTune:pidautotuner-ftc:v0.2.0' // OpModes (depends on core)
    }
    ```
 
@@ -79,27 +82,41 @@ with a higher `compileSdk` than its consumer will fail to build.
    > the tag.
 
 5. Sync Gradle. Two new OpModes will appear on the Driver Station:
-   **"PID Auto Tuner (Position)"** and **"PIDF Auto Tuner (Velocity)"**.
+   **"PID Auto Tuner (Position)"** and **"PIDF Auto Tuner (Velocity)"** -- they'll
+   run immediately using built-in defaults.
+
+6. **(Recommended) Add your own config.** Copy
+   [`templates/TuningConfig.java.template`](templates/TuningConfig.java.template)
+   to:
+   ```
+   TeamCode/src/main/java/org/firstinspires/ftc/teamcode/TuningConfig.java
+   ```
+   (package `org.firstinspires.ftc.teamcode`, class name `TuningConfig`, both
+   exactly as shown -- the OpModes find this class via reflection at runtime).
+   Edit the fields you care about (`MOTOR_NAME`, `POSITION_TARGET_TICKS` /
+   `VELOCITY_TARGET_TICKS_PER_SEC`, etc.) and re-deploy. You can omit any field
+   you don't need to change -- it falls back to a built-in default. This is
+   the **only file** you need to add; no other FtcAutoTune source goes into
+   your TeamCode.
 
 ## Using it
 
 ### 1. Tune
 
-- Open `TuningConfig` (you can also just edit the values via the published
-  artifact's source if you cloned it, or copy `TuningConfig.java` into your
-  own TeamCode and adjust the OpModes to reference your copy -- whichever is
-  easier for your team).
-- Set `MOTOR_NAME` to match your hardware configuration name, and set either
-  `POSITION_TARGET_TICKS` (position tuner) or
-  `VELOCITY_TARGET_TICKS_PER_SEC` (velocity/PIDF tuner) to a realistic value
-  for your mechanism.
+- In `TeamCode/src/main/java/org/firstinspires/ftc/teamcode/TuningConfig.java`
+  (copied from the template, step 6 above), set `MOTOR_NAME` to match your
+  hardware configuration name, and set either `POSITION_TARGET_TICKS`
+  (position tuner) or `VELOCITY_TARGET_TICKS_PER_SEC` (velocity/PIDF tuner)
+  to a realistic value for your mechanism.
 - **Safety first:** for arms/lifts, make sure the mechanism can swing
   `+/- POSITION_TARGET_TICKS` around its current position without hitting
   hard stops -- it *will* oscillate through that whole range repeatedly.
   Start with a low `RELAY_AMPLITUDE` (e.g. 0.3) and increase if it doesn't
   oscillate.
 - Run the appropriate OpMode. Phase 1 (and Phase 2 for PIDF) run
-  automatically -- stand back.
+  automatically -- stand back. If telemetry shows "No ... TuningConfig found",
+  the OpMode didn't find your config class (check the package/class name) and
+  is using built-in defaults instead.
 - Read the candidate gain sets from telemetry. Hold gamepad1 `A` to live-test
   the suggested candidate.
 

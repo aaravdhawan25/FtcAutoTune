@@ -1,9 +1,23 @@
-package com.aaravdhawan25.pidautotuner.ftc;
+package org.firstinspires.ftc.teamcode;
 
 /**
- * Edit these values for your robot before running either tuner OpMode.
- * Keeping them in one place makes it easy to re-tune a different mechanism
- * just by changing this file.
+ * Tuning configuration for the FtcAutoTune library's OpModes
+ * ({@code PID Auto Tuner (Position)} and {@code PIDF Auto Tuner (Velocity)}).
+ *
+ * <h2>How to use this file</h2>
+ * <p>Copy this file into your TeamCode at exactly:
+ * <pre>
+ *   TeamCode/src/main/java/org/firstinspires/ftc/teamcode/TuningConfig.java
+ * </pre>
+ * (package {@code org.firstinspires.ftc.teamcode}, class name
+ * {@code TuningConfig}, both must match exactly). The library's OpModes find
+ * this class via reflection at runtime and read whichever fields you define
+ * here -- everything else falls back to built-in defaults, so you only need
+ * to set the fields that matter for the mechanism you're tuning right now.
+ *
+ * <p>You do NOT need to add any other FtcAutoTune source files -- those come
+ * from the {@code pidautotuner-core} / {@code pidautotuner-ftc} JitPack
+ * dependencies.
  */
 public final class TuningConfig {
 
@@ -74,4 +88,14 @@ public final class TuningConfig {
 
     /** How long to hold each feedforward test power before sampling, in seconds. */
     public static final double FEEDFORWARD_SETTLE_TIME_S = 1.5;
+
+    // ---- Candidate gain rules -------------------------------------------
+
+    /**
+     * If false, every candidate gain set has {@code kI = 0} and is computed
+     * using the Ziegler-Nichols PD (instead of PID) rule family. Common
+     * choice for velocity/flywheel loops where {@code kF} already handles
+     * steady-state error and an integral term mainly risks windup.
+     */
+    public static final boolean TUNE_INTEGRAL_TERM = false;
 }
