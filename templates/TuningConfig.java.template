@@ -31,6 +31,9 @@ public final class TuningConfig {
     /** Set true if positive power should move the mechanism toward a *lower* encoder reading. */
     public static final boolean REVERSED = false;
 
+    /** Set true if you are using position pid tuner **/
+    public static final boolean PositionPIDtuner = false;
+
     // ---- Relay test tuning ---------------------------------------------
 
     /**
