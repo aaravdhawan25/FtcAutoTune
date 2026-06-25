@@ -32,7 +32,7 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
  *         spinning the mechanism up to the target velocity with a real PIDF loop.</li>
  * </ol>
  */
-@TeleOp(name = "PIDF Auto Tuner (Velocity)")
+@TeleOp(name = "FtcAutoTune | Velocity PIDF", group = "FtcAutoTune")
 public class VelocityPIDFTunerOpMode extends LinearOpMode {
 
     @Override
