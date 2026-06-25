@@ -94,6 +94,9 @@ public class PIDMaster {
     private PIDFController liveController;
     private boolean liveTestRunning = false;
 
+    // RPM display
+    private final double ticksPerRev;
+
     /**
      * @param hardwareMap            from the OpMode
      * @param motorName              hardware config name of the motor, e.g. {@code TuningConfig.MOTOR_NAME}
@@ -113,11 +116,14 @@ public class PIDMaster {
      * @param feedforwardSettleTimeS velocity mode only: {@code TuningConfig.FEEDFORWARD_SETTLE_TIME_S}.
      *                               Ignored for position mode.
      * @param tuneIntegralTerm       {@code TuningConfig.TUNE_INTEGRAL_TERM}
+     * @param ticksPerRev            {@code TuningConfig.TICKS_PER_REV} -- used to display RPM
+     *                               alongside ticks/sec in telemetry. Pass 0 to disable RPM display.
      */
     public PIDMaster(HardwareMap hardwareMap, String motorName, boolean reversed, boolean positionMode,
                       double targetValue, double hysteresis,
                       double relayAmplitude, int cyclesToCollect, int cyclesToIgnore, double relayTestTimeoutS,
-                      double[] feedforwardTestPowers, double feedforwardSettleTimeS, boolean tuneIntegralTerm) {
+                      double[] feedforwardTestPowers, double feedforwardSettleTimeS, boolean tuneIntegralTerm,
+                      double ticksPerRev) {
 
         this.positionMode = positionMode;
         this.relayAmplitude = relayAmplitude;
@@ -127,6 +133,7 @@ public class PIDMaster {
         this.feedforwardTestPowers = feedforwardTestPowers;
         this.feedforwardSettleTimeS = feedforwardSettleTimeS;
         this.tuneIntegralTerm = tuneIntegralTerm;
+        this.ticksPerRev = ticksPerRev;
 
         motor = hardwareMap.get(DcMotorEx.class, motorName);
         motor.setDirection(reversed
@@ -252,6 +259,14 @@ public class PIDMaster {
     // Telemetry
     // ---------------------------------------------------------------------
 
+    /** Converts ticks/sec to RPM if ticksPerRev is set, otherwise returns null. */
+    private String rpmString(double ticksPerSec) {
+        if (ticksPerRev > 0) {
+            return String.format("  (%.1f RPM)", (ticksPerSec / ticksPerRev) * 60.0);
+        }
+        return "";
+    }
+
     /** @return telemetry lines describing tuning progress (relay test / feedforward sweep). Call while {@code !isTuningComplete()}. */
     public List<String> getTelemetryLines() {
         List<String> lines = new ArrayList<>();
@@ -262,15 +277,15 @@ public class PIDMaster {
                     lines.add(String.format("Position: %.0f", measure()));
                     lines.add(String.format("Setpoint: %.1f", setpoint));
                 } else {
-                    lines.add(String.format("Velocity (ticks/s): %.1f", measure()));
-                    lines.add(String.format("Target (ticks/s): %.1f", setpoint));
+                    lines.add(String.format("Velocity: %.1f ticks/s%s", measure(), rpmString(measure())));
+                    lines.add(String.format("Target:   %.1f ticks/s%s", setpoint, rpmString(setpoint)));
                 }
                 lines.add(String.format("Cycles collected: %d / %d", tuner.cyclesCollected(), cyclesToCollect + cyclesToIgnore));
                 break;
             case FEEDFORWARD_SWEEP:
                 lines.add("=== Phase 2: Feedforward Sweep ===");
                 lines.add(String.format("Testing power: %.2f", feedforwardTestPowers[ffPowerIndex]));
-                lines.add(String.format("Velocity (ticks/s): %.1f", ffLastMeasurement));
+                lines.add(String.format("Velocity: %.1f ticks/s%s", ffLastMeasurement, rpmString(ffLastMeasurement)));
                 break;
             case TIMED_OUT:
                 lines.add("=== Tuning TIMED OUT ===");
@@ -347,7 +362,9 @@ public class PIDMaster {
         if (positionMode) {
             lines.add(String.format("Position: %.0f  Setpoint: %.1f  Error: %.1f", measurement, setpoint, setpoint - measurement));
         } else {
-            lines.add(String.format("Velocity: %.1f  Target: %.1f  Error: %.1f", measurement, setpoint, setpoint - measurement));
+            lines.add(String.format("Velocity: %.1f ticks/s%s", measurement, rpmString(measurement)));
+            lines.add(String.format("Target:   %.1f ticks/s%s", setpoint, rpmString(setpoint)));
+            lines.add(String.format("Error:    %.1f ticks/s%s", setpoint - measurement, rpmString(Math.abs(setpoint - measurement))));
         }
         lines.add(String.format("Output power: %.3f", output));
         return lines;

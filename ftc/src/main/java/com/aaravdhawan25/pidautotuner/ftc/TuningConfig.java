@@ -61,6 +61,47 @@ public final class TuningConfig {
     // ---- Velocity (PIDF) tuner specific -----------------------------------
 
     /**
+     * Encoder ticks per revolution of the OUTPUT shaft you are measuring,
+     * accounting for any gearing between the encoder and the mechanism.
+     *
+     * <p>Common values:
+     * <ul>
+     *   <li>GoBILDA 435 RPM (5202/5203): {@code 384.5}</li>
+     *   <li>GoBILDA 312 RPM:             {@code 537.7}</li>
+     *   <li>GoBILDA 223 RPM:             {@code 751.8}</li>
+     *   <li>GoBILDA 117 RPM:             {@code 1425.1}</li>
+     *   <li>REV HD Hex bare shaft:        {@code 28.0}</li>
+     *   <li>REV UltraPlanetary 4:1:      {@code 112.0}</li>
+     *   <li>REV UltraPlanetary 20:1:     {@code 560.0}</li>
+     *   <li>REV UltraPlanetary 40:1:     {@code 751.8}</li>
+     *   <li>AndyMark NeveRest 20:        {@code 537.6}</li>
+     *   <li>AndyMark NeveRest 40:        {@code 1120.0}</li>
+     *   <li>Tetrix TorqueNADO:           {@code 1440.0}</li>
+     * </ul>
+     *
+     * <p>Used to display RPM on telemetry alongside raw ticks/sec, and to
+     * allow {@link #VELOCITY_TARGET_RPM} as an alternative to
+     * {@link #VELOCITY_TARGET_TICKS_PER_SEC}. If you set
+     * {@link #USE_RPM_TARGET} to true, set this to your motor's spec-sheet
+     * value (CPR * gear ratio for geared motors).
+     */
+    public static final double TICKS_PER_REV = 384.5; // default: GoBILDA 435 RPM
+
+    /**
+     * If true, the velocity tuners use {@link #VELOCITY_TARGET_RPM} as
+     * the target (converted to ticks/sec internally using
+     * {@link #TICKS_PER_REV}). If false, {@link #VELOCITY_TARGET_TICKS_PER_SEC}
+     * is used directly.
+     */
+    public static final boolean USE_RPM_TARGET = false;
+
+    /**
+     * Target velocity in RPM. Only used when {@link #USE_RPM_TARGET} is true.
+     * Converted to ticks/sec internally as: {@code (RPM / 60) * TICKS_PER_REV}.
+     */
+    public static final double VELOCITY_TARGET_RPM = 435.0;
+
+    /**
      * Target velocity for the velocity PIDF tuner, in encoder ticks per second.
      * Pick a value representative of where you'll actually run the mechanism
      * (e.g. your flywheel's shooting speed).
@@ -113,4 +154,33 @@ public final class TuningConfig {
      * <p>This is common on shooters where only one encoder port is used.
      */
     public static final boolean DUAL_ENCODERS = false;
+
+    // ---- Convenience helpers -----------------------------------------------
+
+    /**
+     * Returns the effective velocity target in ticks/sec, respecting
+     * {@link #USE_RPM_TARGET}. Use this in your OpMode instead of referencing
+     * {@code VELOCITY_TARGET_TICKS_PER_SEC} directly when you want RPM-target
+     * support without changing any other code.
+     *
+     * <pre>{@code
+     * double targetTicksPerSec = TuningConfig.effectiveTargetTicksPerSec();
+     * }</pre>
+     */
+    public static double effectiveTargetTicksPerSec() {
+        if (USE_RPM_TARGET) {
+            return (VELOCITY_TARGET_RPM / 60.0) * TICKS_PER_REV;
+        }
+        return VELOCITY_TARGET_TICKS_PER_SEC;
+    }
+
+    /** Converts a ticks/sec value to RPM using {@link #TICKS_PER_REV}. */
+    public static double toRPM(double ticksPerSec) {
+        return (ticksPerSec / TICKS_PER_REV) * 60.0;
+    }
+
+    /** Converts an RPM value to ticks/sec using {@link #TICKS_PER_REV}. */
+    public static double toTicksPerSec(double rpm) {
+        return (rpm / 60.0) * TICKS_PER_REV;
+    }
 }
