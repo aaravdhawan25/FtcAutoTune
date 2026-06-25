@@ -87,4 +87,20 @@ public final class TuningConfig {
      * steady-state error and an integral term mainly risks windup.
      */
     public static final boolean TUNE_INTEGRAL_TERM = false;
+
+    // ---- Dual motor velocity tuner specific --------------------------------
+
+    /**
+     * Hardware config name of the second motor for the dual-motor velocity
+     * PIDF tuner (e.g. "flywheel2", "shooterRight"). Both motors will be
+     * tuned together and run with the same kP/kI/kD/kF output.
+     */
+    public static final String MOTOR_NAME_2 = "motor2";
+
+    /**
+     * Direction of the second motor. Set true if positive power should run
+     * this motor in the opposite physical direction to how the encoder reads
+     * (common on shooter/flywheel setups where motors face each other).
+     */
+    public static final boolean REVERSED_2 = true;
 }
