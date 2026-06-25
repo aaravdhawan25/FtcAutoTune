@@ -79,6 +79,7 @@ public class DualMotorPIDMaster {
     private final double[] feedforwardTestPowers;
     private final double feedforwardSettleTimeS;
     private final boolean tuneIntegralTerm;
+    private final boolean dualEncoders;
 
     private final RelayAutoTuner tuner;
 
@@ -114,6 +115,9 @@ public class DualMotorPIDMaster {
      * @param feedforwardTestPowers  open-loop powers for kF characterization
      * @param feedforwardSettleTimeS settle time per power level
      * @param tuneIntegralTerm       false = use PD-only rules (kI=0)
+     * @param dualEncoders           true if both motors have encoders plugged in;
+     *                               false if only motor 1 has an encoder (motor 2
+     *                               is still driven but its velocity is not measured)
      */
     public DualMotorPIDMaster(HardwareMap hardwareMap,
                                String motorName1, boolean reversed1,
@@ -122,7 +126,7 @@ public class DualMotorPIDMaster {
                                double relayAmplitude, int cyclesToCollect, int cyclesToIgnore,
                                double relayTestTimeoutS,
                                double[] feedforwardTestPowers, double feedforwardSettleTimeS,
-                               boolean tuneIntegralTerm) {
+                               boolean tuneIntegralTerm, boolean dualEncoders) {
 
         this.targetVelocity = targetVelocity;
         this.relayAmplitude = relayAmplitude;
@@ -132,6 +136,7 @@ public class DualMotorPIDMaster {
         this.feedforwardTestPowers = feedforwardTestPowers;
         this.feedforwardSettleTimeS = feedforwardSettleTimeS;
         this.tuneIntegralTerm = tuneIntegralTerm;
+        this.dualEncoders = dualEncoders;
 
         motor1 = hardwareMap.get(DcMotorEx.class, motorName1);
         motor1.setDirection(reversed1
@@ -154,12 +159,19 @@ public class DualMotorPIDMaster {
     }
 
     /**
-     * Returns the average absolute velocity of both motors in ticks/sec.
-     * Using the absolute value means direction reversals are already
-     * accounted for by the motor direction settings above.
+     * Returns the velocity measurement used by the relay tuner.
+     * <ul>
+     *     <li>If {@code dualEncoders = true}: average absolute velocity of both motors</li>
+     *     <li>If {@code dualEncoders = false}: absolute velocity of motor 1 only
+     *         (motor 2 still receives the same drive power, its encoder just isn't read)</li>
+     * </ul>
      */
     private double measure() {
-        return (Math.abs(motor1.getVelocity()) + Math.abs(motor2.getVelocity())) / 2.0;
+        if (dualEncoders) {
+            return (Math.abs(motor1.getVelocity()) + Math.abs(motor2.getVelocity())) / 2.0;
+        } else {
+            return Math.abs(motor1.getVelocity());
+        }
     }
 
     /** Applies the same power to both motors. */
@@ -262,19 +274,30 @@ public class DualMotorPIDMaster {
         switch (phase) {
             case RELAY_TEST:
                 lines.add("=== Phase 1: Relay Test (Dual Motor) ===");
-                lines.add(String.format("Avg velocity (ticks/s): %.1f", measure()));
+                lines.add(String.format("Encoder mode: %s", dualEncoders ? "DUAL (avg of both)" : "SINGLE (motor 1 only)"));
+                lines.add(String.format("Measurement (ticks/s): %.1f", measure()));
                 lines.add(String.format("Motor 1 velocity: %.1f", Math.abs(motor1.getVelocity())));
-                lines.add(String.format("Motor 2 velocity: %.1f", Math.abs(motor2.getVelocity())));
+                if (dualEncoders) {
+                    lines.add(String.format("Motor 2 velocity: %.1f", Math.abs(motor2.getVelocity())));
+                } else {
+                    lines.add("Motor 2 velocity: (no encoder)");
+                }
                 lines.add(String.format("Target (ticks/s): %.1f", targetVelocity));
                 lines.add(String.format("Cycles collected: %d / %d",
                         tuner.cyclesCollected(), cyclesToCollect + cyclesToIgnore));
                 break;
             case FEEDFORWARD_SWEEP:
                 lines.add("=== Phase 2: Feedforward Sweep (Dual Motor) ===");
+                lines.add(String.format("Encoder mode: %s", dualEncoders ? "DUAL" : "SINGLE (motor 1)"));
                 lines.add(String.format("Testing power: %.2f", feedforwardTestPowers[ffPowerIndex]));
-                lines.add(String.format("Avg velocity (ticks/s): %.1f", ffLastMeasurement));
-                lines.add(String.format("Motor 1: %.1f  Motor 2: %.1f",
-                        Math.abs(motor1.getVelocity()), Math.abs(motor2.getVelocity())));
+                lines.add(String.format("Measurement (ticks/s): %.1f", ffLastMeasurement));
+                if (dualEncoders) {
+                    lines.add(String.format("Motor 1: %.1f  Motor 2: %.1f",
+                            Math.abs(motor1.getVelocity()), Math.abs(motor2.getVelocity())));
+                } else {
+                    lines.add(String.format("Motor 1: %.1f  Motor 2: (no encoder)",
+                            Math.abs(motor1.getVelocity())));
+                }
                 break;
             case TIMED_OUT:
                 lines.add("=== Tuning TIMED OUT ===");
@@ -301,6 +324,7 @@ public class DualMotorPIDMaster {
         }
 
         lines.add("=== Relay Test Result (Dual Motor) ===");
+        lines.add(String.format("Encoder mode: %s", dualEncoders ? "DUAL" : "SINGLE (motor 1 only)"));
         lines.add(String.format("Ku=%.6f  Tu=%.4fs", result.Ku, result.Tu));
         lines.add(String.format("kF=%.6f (samples: %d)", kF, ff.sampleCount()));
         lines.add("");
@@ -342,10 +366,15 @@ public class DualMotorPIDMaster {
         setPower(output);
 
         lines.add("=== LIVE TEST ACTIVE (Dual Motor) ===");
-        lines.add(String.format("Avg velocity: %.1f  Target: %.1f  Error: %.1f",
+        lines.add(String.format("Measurement: %.1f  Target: %.1f  Error: %.1f",
                 measurement, targetVelocity, targetVelocity - measurement));
-        lines.add(String.format("Motor 1: %.1f  Motor 2: %.1f",
-                Math.abs(motor1.getVelocity()), Math.abs(motor2.getVelocity())));
+        if (dualEncoders) {
+            lines.add(String.format("Motor 1: %.1f  Motor 2: %.1f",
+                    Math.abs(motor1.getVelocity()), Math.abs(motor2.getVelocity())));
+        } else {
+            lines.add(String.format("Motor 1: %.1f  Motor 2: (no encoder)",
+                    Math.abs(motor1.getVelocity())));
+        }
         lines.add(String.format("Output power: %.3f", output));
         return lines;
     }

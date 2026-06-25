@@ -48,11 +48,13 @@ public class DualMotorVelocityPIDFTunerOpMode extends LinearOpMode {
                 TuningConfig.RELAY_TEST_TIMEOUT_S,
                 TuningConfig.FEEDFORWARD_TEST_POWERS,
                 TuningConfig.FEEDFORWARD_SETTLE_TIME_S,
-                TuningConfig.TUNE_INTEGRAL_TERM);
+                TuningConfig.TUNE_INTEGRAL_TERM,
+                TuningConfig.DUAL_ENCODERS);
 
         telemetry.addLine("=== PIDF Auto Tuner (Dual Velocity) ===");
         telemetry.addData("Motor 1", TuningConfig.MOTOR_NAME + (TuningConfig.REVERSED ? " (reversed)" : ""));
         telemetry.addData("Motor 2", TuningConfig.MOTOR_NAME_2 + (TuningConfig.REVERSED_2 ? " (reversed)" : ""));
+        telemetry.addData("Encoder mode", TuningConfig.DUAL_ENCODERS ? "DUAL (both motors)" : "SINGLE (motor 1 only)");
         telemetry.addData("Target velocity (ticks/s)", TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC);
         telemetry.addLine("Press START. Both motors will oscillate automatically.");
         telemetry.update();

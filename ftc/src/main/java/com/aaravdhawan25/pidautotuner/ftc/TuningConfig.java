@@ -103,4 +103,14 @@ public final class TuningConfig {
      * (common on shooter/flywheel setups where motors face each other).
      */
     public static final boolean REVERSED_2 = true;
+
+    /**
+     * Set to true if BOTH motors have encoders plugged in. Set to false if
+     * only the first motor ({@code MOTOR_NAME}) has an encoder connected --
+     * in that case the tuner uses only motor 1's velocity as the measurement
+     * but still drives both motors with the same output power and gains.
+     *
+     * <p>This is common on shooters where only one encoder port is used.
+     */
+    public static final boolean DUAL_ENCODERS = false;
 }
