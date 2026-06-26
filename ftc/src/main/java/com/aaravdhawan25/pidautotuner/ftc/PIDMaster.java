@@ -155,9 +155,20 @@ public class PIDMaster {
         tuner = new RelayAutoTuner(setpoint, relayAmplitude, hysteresis, cyclesToCollect, cyclesToIgnore);
     }
 
-    /** @return the current measurement: encoder position (position mode) or velocity in ticks/sec (velocity mode). */
+    /**
+     * Returns the current measurement:
+     * <ul>
+     *     <li>Position mode: signed encoder position (ticks)</li>
+     *     <li>Velocity mode: <b>absolute</b> velocity (ticks/sec) -- Math.abs is
+     *         critical here. Without it, when the relay applies negative power to
+     *         slow the motor the velocity briefly goes negative, causing the PID
+     *         to see a massive positive error and spike to full power (jitter).
+     *         Using the absolute value keeps the measurement positive at all times,
+     *         matching how {@link DualMotorPIDMaster} works.</li>
+     * </ul>
+     */
     private double measure() {
-        return positionMode ? motor.getCurrentPosition() : motor.getVelocity();
+        return positionMode ? motor.getCurrentPosition() : Math.abs(motor.getVelocity());
     }
 
     // ---------------------------------------------------------------------
@@ -215,7 +226,7 @@ public class PIDMaster {
             case FEEDFORWARD_SWEEP: {
                 double power = feedforwardTestPowers[ffPowerIndex];
                 motor.setPower(power);
-                ffLastMeasurement = motor.getVelocity();
+                ffLastMeasurement = Math.abs(motor.getVelocity());
 
                 if (now - ffPhaseStartTime >= feedforwardSettleTimeS) {
                     ff.addSample(power, ffLastMeasurement);
@@ -250,7 +261,14 @@ public class PIDMaster {
         // index 2 = "no overshoot" (position default), index 4 = "classic ZN" (velocity default)
         PIDGains liveTestGains = candidates.get(positionMode ? 2 : 4);
         liveController = PIDFController.fromGains(liveTestGains);
-        liveController.setOutputBounds(-1.0, 1.0);
+        // Position mode: allow full range [-1, 1] for bidirectional control.
+        // Velocity mode: clamp to [0, 1] -- a flywheel should never be actively
+        // reversed during the live test; just reduce power to zero when above target.
+        if (positionMode) {
+            liveController.setOutputBounds(-1.0, 1.0);
+        } else {
+            liveController.setOutputBounds(0.0, 1.0);
+        }
 
         phase = Phase.RESULTS;
     }
