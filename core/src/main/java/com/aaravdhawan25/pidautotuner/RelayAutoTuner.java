@@ -4,22 +4,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * ok so this is the main tuning engine basically
- * it does the relay (bang-bang) thing where it slams the motor full power
- * one way until the speed/position goes past the target, then slams it
- * the other way. this makes it oscillate and from that we can figure out
- * the pid gains. its actually really clever ngl
+ * Implements the relay feedback auto-tuning method (Åström & Hägglund, 1984).
  *
- * based on the astrom hagglund method from 1984 which sounds old but
- * it still works great for ftc motors so whatever
+ * <p>The output alternates between {@code +relayAmplitude} and {@code -relayAmplitude}
+ * based on whether the measurement is above or below the setpoint. This forces
+ * the system into a sustained limit-cycle oscillation, from which the ultimate
+ * gain {@code Ku} and ultimate period {@code Tu} are extracted and passed to
+ * {@link ZieglerNicholsCalculator} to produce PID gain candidates.
  *
- * this class has literally no idea what a motor is, it just takes numbers
- * in and spits numbers out. you have to do the actual motor stuff yourself:
- * 1. read your encoder
- * 2. call update() with that number and the current time
- * 3. set your motor power to whatever update() returns
- * 4. keep doing that until isFinished() is true
- * 5. call computeResult() to get Ku and Tu
+ * <p>This class is purely mathematical and has no dependency on the FTC SDK.
+ * Each loop iteration, the caller must:
+ * <ol>
+ *   <li>Read the encoder (position or velocity).</li>
+ *   <li>Call {@link #update(double, double)} with that measurement and the
+ *       current timestamp.</li>
+ *   <li>Apply the returned value to the motor via {@code motor.setPower(...)}.</li>
+ *   <li>Check {@link #isFinished()} and call {@link #computeResult()} when true.</li>
+ * </ol>
  */
 public class RelayAutoTuner {
 
@@ -39,29 +40,32 @@ public class RelayAutoTuner {
     private final List<Double> extrema = new ArrayList<>();
 
     /**
-     * sets up the tuner, pretty self explanatory
+     * Constructs a new {@code RelayAutoTuner}.
      *
-     * @param setpoint        the speed or position you want to oscillate around
-     * @param relayAmplitude  how hard to slam the motor (0 to 1). like 0.5 is
-     *                        usually fine but go lower for arms so they dont
-     *                        destroy themselves
-     * @param hysteresis      a tiny deadband so random noise doesnt make it
-     *                        switch back and forth super fast. like 10 ticks
-     *                        for position or 30 ticks/sec for velocity
-     * @param cyclesToCollect how many full oscillations to actually use for
-     *                        the math. more = more accurate but takes longer.
-     *                        6 is good
-     * @param cyclesToIgnore  skip the first few cycles because the system is
-     *                        still warming up and the data is kinda garbage.
-     *                        2 is usually enough
+     * @param setpoint        the target value to oscillate around, in encoder
+     *                        ticks for position or ticks/sec for velocity
+     * @param relayAmplitude  the relay output magnitude in motor power units
+     *                        (0 to 1). Must be large enough to overcome static
+     *                        friction but small enough to be mechanically safe.
+     *                        Typical range: 0.3 to 0.7.
+     * @param hysteresis      a deadband around the setpoint that prevents
+     *                        sensor noise from causing rapid relay switching.
+     *                        A few encoder ticks or a few ticks/sec is sufficient.
+     * @param cyclesToCollect the number of full oscillation cycles to average
+     *                        when computing {@code Ku} and {@code Tu}. More
+     *                        cycles improve accuracy at the cost of tuning time.
+     *                        Five to ten is typical.
+     * @param cyclesToIgnore  the number of initial cycles to discard while the
+     *                        system transitions into a steady limit cycle.
+     *                        One to two is typical.
      */
     public RelayAutoTuner(double setpoint, double relayAmplitude, double hysteresis,
                            int cyclesToCollect, int cyclesToIgnore) {
         if (relayAmplitude <= 0) {
-            throw new IllegalArgumentException("relayAmplitude has to be positive bro");
+            throw new IllegalArgumentException("relayAmplitude must be positive");
         }
         if (hysteresis < 0) {
-            throw new IllegalArgumentException("hysteresis cant be negative that makes no sense");
+            throw new IllegalArgumentException("hysteresis must be non-negative");
         }
         this.setpoint = setpoint;
         this.relayAmplitude = relayAmplitude;
@@ -71,16 +75,17 @@ public class RelayAutoTuner {
     }
 
     /**
-     * call this every loop. give it your current measurement and the time,
-     * it tells you what power to set the motor to.
+     * Advances the relay test by one control-loop iteration.
      *
-     * @param measurement      whatever youre measuring (ticks or ticks/sec)
-     * @param timestampSeconds current time in seconds, just use getRuntime()
-     * @return either +relayAmplitude or -relayAmplitude, set your motor to this
+     * @param measurement      the current sensor reading, in the same units
+     *                         as the setpoint
+     * @param timestampSeconds current time in seconds (e.g. {@code getRuntime()})
+     * @return the relay output to apply to the motor, either
+     *         {@code +relayAmplitude} or {@code -relayAmplitude}
      */
     public double update(double measurement, double timestampSeconds) {
-        // track the highest/lowest point since the last switch
-        // so we can figure out how big the oscillation is
+        // Track the peak or trough since the last relay switch so that the
+        // oscillation amplitude can be computed when computeResult() is called.
         if (!hasExtremum) {
             currentExtremum = measurement;
             hasExtremum = true;
@@ -90,9 +95,7 @@ public class RelayAutoTuner {
             currentExtremum = Math.min(currentExtremum, measurement);
         }
 
-        // this is where we actually decide to flip the relay
-        // going high -> switch to low when we pass the top threshold
-        // going low -> switch to high when we pass the bottom threshold
+        // Switch the relay when the measurement crosses the hysteresis threshold.
         if (outputHigh && measurement > setpoint + hysteresis) {
             recordSwitch(timestampSeconds);
             outputHigh = false;
@@ -108,7 +111,6 @@ public class RelayAutoTuner {
 
     private void recordSwitch(double timestampSeconds) {
         extrema.add(currentExtremum);
-
         if (lastSwitchTime != null) {
             halfPeriods.add(timestampSeconds - lastSwitchTime);
         }
@@ -116,25 +118,33 @@ public class RelayAutoTuner {
     }
 
     /**
-     * returns true when we have enough data to compute the gains
-     * one "cycle" is a full oscillation (up half + down half)
+     * Returns {@code true} when enough oscillation cycles have been recorded
+     * to compute a valid result. One cycle consists of one high half-period
+     * followed by one low half-period.
      */
     public boolean isFinished() {
         int usableHalfPeriods = (cyclesToCollect + cyclesToIgnore) * 2;
         return halfPeriods.size() >= usableHalfPeriods;
     }
 
-    /** how many full oscillation cycles weve recorded so far */
+    /**
+     * Returns the number of complete oscillation cycles recorded so far.
+     * This value increases until {@link #isFinished()} returns {@code true}.
+     */
     public int cyclesCollected() {
         return halfPeriods.size() / 2;
     }
 
     /**
-     * call this after isFinished() is true to get Ku and Tu
-     * which then get fed into ZieglerNicholsCalculator to get actual pid gains
+     * Computes the ultimate gain {@code Ku} and ultimate period {@code Tu}
+     * from the recorded oscillation data. Must be called after
+     * {@link #isFinished()} returns {@code true}.
      *
-     * returns null if we somehow dont have enough data (shouldnt happen if
-     * you waited for isFinished() but just in case)
+     * <p>Uses the Åström–Hägglund formula:
+     * {@code Ku = 4d / (π · a)}, where {@code d} is the relay amplitude and
+     * {@code a} is the average half-amplitude of the sustained oscillation.
+     *
+     * @return the tuning result, or {@code null} if insufficient data exists
      */
     public RelayTuningResult computeResult() {
         int ignoreHalfPeriods = cyclesToIgnore * 2;
@@ -144,8 +154,7 @@ public class RelayAutoTuner {
             return null;
         }
 
-        // average the period across all the good cycles
-        // one full cycle = two half periods (high + low added together)
+        // Average the period across the usable cycles (each full cycle = two half-periods).
         double periodSum = 0;
         int periodCount = 0;
         for (int i = ignoreHalfPeriods; i < ignoreHalfPeriods + usableHalfPeriods; i += 2) {
@@ -154,9 +163,9 @@ public class RelayAutoTuner {
         }
         double Tu = periodSum / periodCount;
 
-        // figure out the average amplitude
-        // the extrema list alternates between peaks and troughs
-        // so peak-to-trough / 2 gives us the amplitude 'a'
+        // Compute the average half-amplitude from the recorded extrema.
+        // Consecutive extrema alternate between peaks and troughs, so the
+        // peak-to-trough distance divided by two gives the half-amplitude.
         double amplitudeSum = 0;
         int amplitudeCount = 0;
         int extremaOffset = ignoreHalfPeriods + 1;
@@ -171,8 +180,7 @@ public class RelayAutoTuner {
             return null;
         }
 
-        // this is the astrom-hagglund formula for ultimate gain
-        // Ku = 4d / (pi * a) where d is relay amplitude and a is oscillation amplitude
+        // Åström–Hägglund ultimate gain formula.
         double Ku = (4.0 * relayAmplitude) / (Math.PI * a);
 
         return new RelayTuningResult(Ku, Tu, a, relayAmplitude);

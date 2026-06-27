@@ -15,24 +15,57 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * this is the main class that runs the whole tuning process for a single motor
- * it handles the relay test, feedforward sweep, computing the gains,
- * and the live test at the end
+ * Orchestrates the full relay-feedback auto-tuning workflow for a single motor,
+ * including the relay test, optional feedforward characterisation sweep, candidate
+ * gain computation, and an interactive live-test phase.
  *
- * your OpMode just calls tuningStep() every loop and checks isTuningComplete()
- * then calls liveTestStep() when the driver holds A to test the gains
+ * <p>This class handles both position-control tuning (run-to-position mechanisms
+ * such as arms and lifts) and velocity-control tuning (constant-speed mechanisms
+ * such as flywheels and intakes). The operating mode is selected via the
+ * {@code positionMode} constructor argument.
  *
- * works for both position (arms, lifts) and velocity (flywheels, intakes)
- * you just pass positionMode=true or false in the constructor
+ * <p>This class resides in the {@code pidautotuner-ftc} library. It is pulled in
+ * automatically via the JitPack dependency and does not need to be copied into
+ * TeamCode. Only the OpMode wrappers and {@code TuningConfig} are user-editable.
  *
- * this class is in the library so you dont have to copy it into your teamcode,
- * just add the jitpack dependency and it shows up automatically
+ * <h2>Usage pattern</h2>
+ * <pre>{@code
+ * PIDMaster pid = new PIDMaster(hardwareMap, TuningConfig.MOTOR_NAME,
+ *         TuningConfig.REVERSED, false,
+ *         TuningConfig.effectiveTargetTicksPerSec(),
+ *         TuningConfig.VELOCITY_HYSTERESIS_TICKS_PER_SEC,
+ *         TuningConfig.RELAY_AMPLITUDE,
+ *         TuningConfig.CYCLES_TO_COLLECT, TuningConfig.CYCLES_TO_IGNORE,
+ *         TuningConfig.RELAY_TEST_TIMEOUT_S,
+ *         TuningConfig.FEEDFORWARD_TEST_POWERS,
+ *         TuningConfig.FEEDFORWARD_SETTLE_TIME_S,
+ *         TuningConfig.TUNE_INTEGRAL_TERM,
+ *         TuningConfig.TICKS_PER_REV);
+ *
+ * // Tuning loop
+ * while (opModeIsActive() && !pid.isTuningComplete()) {
+ *     pid.tuningStep(getRuntime());
+ *     for (String line : pid.getTelemetryLines()) telemetry.addLine(line);
+ *     telemetry.update();
+ * }
+ *
+ * // Results and live-test loop
+ * while (opModeIsActive()) {
+ *     telemetry.clearAll();
+ *     for (String line : pid.getResultTelemetryLines()) telemetry.addLine(line);
+ *     if (gamepad1.a) pid.liveTestStep(getRuntime()); else pid.stopLiveTest();
+ *     telemetry.update();
+ * }
+ * pid.stop();
+ * }</pre>
  */
 public class PIDMaster {
 
-    // the tuning goes through these phases in order
-    // RELAY_TEST -> FEEDFORWARD_SWEEP (velocity only) -> RESULTS
-    // or RELAY_TEST -> TIMED_OUT/FAILED if something goes wrong
+    /**
+     * Internal state machine phases.
+     * Progresses: RELAY_TEST → FEEDFORWARD_SWEEP (velocity only) → RESULTS.
+     * Transitions to TIMED_OUT or FAILED on error.
+     */
     private enum Phase {
         RELAY_TEST,
         FEEDFORWARD_SWEEP,
@@ -53,45 +86,67 @@ public class PIDMaster {
     private final boolean tuneIntegralTerm;
 
     private final RelayAutoTuner tuner;
-    private final double setpoint; // target position or target velocity
+
+    /**
+     * The absolute setpoint used by the relay tuner.
+     * For position mode: {@code startPosition + targetValue}.
+     * For velocity mode: equal to {@code targetValue} directly.
+     */
+    private final double setpoint;
 
     private Phase phase = Phase.RELAY_TEST;
 
-    // feedforward sweep tracking
+    // Feedforward sweep tracking
     private final FeedforwardCharacterizer ff = new FeedforwardCharacterizer();
     private int ffPowerIndex = 0;
     private double ffPhaseStartTime = -1;
     private double ffLastMeasurement = 0;
 
-    // results from the tuning
+    // Results
     private RelayTuningResult result;
     private List<PIDGains> candidates;
     private double kF = 0.0;
 
-    // live test controller
+    // Live test
     private PIDFController liveController;
     private boolean liveTestRunning = false;
 
-    // used to show RPM alongside ticks/sec in telemetry (set to 0 to disable)
+    /**
+     * Ticks per revolution of the output shaft, used to annotate telemetry
+     * with RPM values. Set to 0 to disable RPM display.
+     */
     private final double ticksPerRev;
 
     /**
-     * sets up the tuner. all your TuningConfig values go here.
+     * Constructs and initialises a {@code PIDMaster}. The motor is immediately
+     * configured for open-loop operation ({@code RUN_WITHOUT_ENCODER}) with its
+     * encoder reset. No tuning begins until the first call to
+     * {@link #tuningStep(double)}.
      *
-     * @param hardwareMap            from the opmode, used to get the motor
-     * @param motorName              motor name from hardware config
-     * @param reversed               flip direction if your encoder reads backwards
-     * @param positionMode           true = arm/lift (position), false = flywheel (velocity)
-     * @param targetValue            position: ticks from start. velocity: ticks/sec target
-     * @param hysteresis             relay deadband. 10 ticks for position, 30 ticks/sec for velocity
-     * @param relayAmplitude         bang-bang power. 0.3-0.7 usually. lower for arms
-     * @param cyclesToCollect        how many oscillations to use for the math
-     * @param cyclesToIgnore         skip the first few while it warms up
-     * @param relayTestTimeoutS      give up after this many seconds if it never oscillates
-     * @param feedforwardTestPowers  power levels for kF sweep. null for position mode
-     * @param feedforwardSettleTimeS wait this long at each power level before measuring
-     * @param tuneIntegralTerm       false = PD only (recommended for flywheels)
-     * @param ticksPerRev            your motor's ticks per revolution, for showing RPM. 0 = dont show RPM
+     * @param hardwareMap            the OpMode hardware map, used to obtain the motor
+     * @param motorName              the hardware configuration name of the motor
+     * @param reversed               {@code true} to invert the motor direction
+     * @param positionMode           {@code true} for position control (arm/lift);
+     *                               {@code false} for velocity control (flywheel/intake)
+     * @param targetValue            for position mode: the target offset from the motor's
+     *                               starting position in encoder ticks; for velocity mode:
+     *                               the target speed in ticks/sec
+     * @param hysteresis             relay deadband in the same units as {@code targetValue}
+     * @param relayAmplitude         relay output magnitude (0–1)
+     * @param cyclesToCollect        oscillation cycles to include in the Ku/Tu average
+     * @param cyclesToIgnore         initial settling cycles to discard before averaging
+     * @param relayTestTimeoutS      maximum duration of the relay test in seconds;
+     *                               if elapsed without sufficient cycles the tuner
+     *                               transitions to {@code TIMED_OUT}
+     * @param feedforwardTestPowers  open-loop power levels for the kF characterisation
+     *                               sweep; pass {@code null} to skip feedforward (position mode)
+     * @param feedforwardSettleTimeS time in seconds to hold each feedforward power level
+     *                               before recording the steady-state velocity
+     * @param tuneIntegralTerm       {@code false} to use PD-only Ziegler–Nichols rules
+     *                               with {@code kI = 0} (recommended for velocity loops);
+     *                               {@code true} to include integral terms
+     * @param ticksPerRev            encoder ticks per output-shaft revolution, used for
+     *                               RPM annotation in telemetry; pass 0 to disable
      */
     public PIDMaster(HardwareMap hardwareMap, String motorName, boolean reversed, boolean positionMode,
                       double targetValue, double hysteresis,
@@ -110,66 +165,72 @@ public class PIDMaster {
         this.ticksPerRev = ticksPerRev;
 
         motor = hardwareMap.get(DcMotorEx.class, motorName);
-        motor.setDirection(reversed
-                ? DcMotorSimple.Direction.REVERSE
-                : DcMotorSimple.Direction.FORWARD);
+        motor.setDirection(reversed ? DcMotorSimple.Direction.REVERSE : DcMotorSimple.Direction.FORWARD);
         motor.setZeroPowerBehavior(positionMode
-                ? DcMotor.ZeroPowerBehavior.BRAKE   // brake for position so it holds
-                : DcMotor.ZeroPowerBehavior.FLOAT); // float for velocity/flywheels
+                ? DcMotor.ZeroPowerBehavior.BRAKE   // Hold position when power is removed.
+                : DcMotor.ZeroPowerBehavior.FLOAT);  // Coast for velocity-controlled mechanisms.
         motor.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
         motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
-        if (positionMode) {
-            // for position mode, target is an offset from where we start
-            int startPosition = motor.getCurrentPosition();
-            setpoint = startPosition + targetValue;
-        } else {
-            // for velocity mode, target is just the speed directly
-            setpoint = targetValue;
-        }
-
+        setpoint = positionMode ? motor.getCurrentPosition() + targetValue : targetValue;
         tuner = new RelayAutoTuner(setpoint, relayAmplitude, hysteresis, cyclesToCollect, cyclesToIgnore);
     }
 
     /**
-     * gets the current measurement from the motor
+     * Returns the current sensor measurement.
      *
-     * IMPORTANT: for velocity mode we use Math.abs() here
-     * without this the velocity goes negative when the relay applies reverse power
-     * and then the PID sees a massive error (like target - (-500) = huge number)
-     * and it just jitters like crazy. the abs fixes this completely.
-     * this was a bug for a while and it drove me crazy lol
+     * <p>For <b>position mode</b>: the signed encoder position in ticks.
      *
-     * for position mode we dont abs because negative position is valid
+     * <p>For <b>velocity mode</b>: the <em>absolute</em> motor velocity in ticks/sec.
+     * {@link Math#abs} is applied because the relay output may briefly reverse
+     * the motor, producing a negative velocity reading. Without this correction,
+     * the relay tuner and PID controller would observe a large spurious positive
+     * error (target − negative_velocity), causing output spikes and instability.
      */
     private double measure() {
         return positionMode ? motor.getCurrentPosition() : Math.abs(motor.getVelocity());
     }
 
     // -------------------------------------------------------------------------
-    // state checks - call these to know whats happening
+    // State queries
     // -------------------------------------------------------------------------
 
-    /** true once tuning is done (success OR failure, check isTuningSuccessful() after) */
+    /**
+     * Returns {@code true} when the tuning workflow has terminated, either
+     * successfully or due to a timeout or failure. Always check
+     * {@link #isTuningSuccessful()} before reading results.
+     */
     public boolean isTuningComplete() {
         return phase == Phase.RESULTS || phase == Phase.TIMED_OUT || phase == Phase.FAILED;
     }
 
-    /** true if tuning worked and you can call getResultTelemetryLines() and liveTestStep() */
+    /**
+     * Returns {@code true} if tuning completed successfully and gain candidates
+     * are available via {@link #getResultTelemetryLines()}.
+     */
     public boolean isTuningSuccessful() {
         return phase == Phase.RESULTS;
     }
 
-    /** true if the relay test ran out of time without oscillating enough */
+    /**
+     * Returns {@code true} if the relay test was terminated by the safety
+     * timeout without collecting sufficient oscillation cycles.
+     */
     public boolean timedOut() {
         return phase == Phase.TIMED_OUT;
     }
 
+    // -------------------------------------------------------------------------
+    // Tuning step
+    // -------------------------------------------------------------------------
+
     /**
-     * call this every loop while !isTuningComplete()
-     * it handles the relay test and feedforward sweep automatically
+     * Advances the tuning state machine by one iteration. Must be called once
+     * per control-loop cycle while {@link #isTuningComplete()} returns
+     * {@code false}. Applies motor power internally; the caller does not need
+     * to call {@code motor.setPower()} separately.
      *
-     * @param now current time in seconds, just pass getRuntime()
+     * @param now the current OpMode runtime in seconds ({@code getRuntime()})
      */
     public void tuningStep(double now) {
         switch (phase) {
@@ -184,12 +245,10 @@ public class PIDMaster {
                     if (result == null) {
                         phase = Phase.FAILED;
                     } else if (!positionMode && feedforwardTestPowers != null && feedforwardTestPowers.length > 0) {
-                        // relay test done, now do the feedforward sweep
                         phase = Phase.FEEDFORWARD_SWEEP;
                         ffPowerIndex = 0;
                         ffPhaseStartTime = now;
                     } else {
-                        // position mode skips feedforward sweep
                         finishTuning();
                     }
                 } else if (now > relayTestTimeoutS) {
@@ -200,11 +259,12 @@ public class PIDMaster {
             }
 
             case FEEDFORWARD_SWEEP: {
-                // run motor at each test power and wait for it to settle
-                // then record (power, velocity) to compute kF
                 double power = feedforwardTestPowers[ffPowerIndex];
                 motor.setPower(power);
-                ffLastMeasurement = Math.abs(motor.getVelocity()); // abs here too, same reason as measure()
+                // Absolute value here for the same reason as in measure(): brief
+                // direction reversals between power levels must not corrupt the
+                // (power, velocity) sample used to compute kF.
+                ffLastMeasurement = Math.abs(motor.getVelocity());
 
                 if (now - ffPhaseStartTime >= feedforwardSettleTimeS) {
                     ff.addSample(power, ffLastMeasurement);
@@ -213,7 +273,7 @@ public class PIDMaster {
                         motor.setPower(0);
                         finishTuning();
                     } else {
-                        ffPhaseStartTime = now; // move to next power level
+                        ffPhaseStartTime = now;
                     }
                 }
                 break;
@@ -222,28 +282,24 @@ public class PIDMaster {
             case RESULTS:
             case TIMED_OUT:
             case FAILED:
-                // nothing to do here, just waiting for the opmode to read the results
                 break;
         }
     }
 
     private void finishTuning() {
-        if (!positionMode) {
-            double rawKf = ff.computeKf();
-            kF = Double.isNaN(rawKf) ? 0.0 : rawKf;
-        } else {
-            kF = 0.0; // no feedforward for position mode
-        }
+        kF = !positionMode ? (Double.isNaN(ff.computeKf()) ? 0.0 : ff.computeKf()) : 0.0;
         candidates = ZieglerNicholsCalculator.computeCandidates(result, kF, tuneIntegralTerm);
 
-        // pick the default candidate for the live test
-        // position: index 2 = "no overshoot" (safest for arms)
-        // velocity: index 4 = "classic ZN" (works well for flywheels)
+        // Select the default live-test candidate.
+        // Position: index 2 ("no overshoot") — minimises risk of hitting physical limits.
+        // Velocity: index 4 ("classic ZN")   — provides adequate bandwidth for flywheels.
         PIDGains liveTestGains = candidates.get(positionMode ? 2 : 4);
         liveController = PIDFController.fromGains(liveTestGains);
 
-        // position mode: full range [-1, 1] since we might need to go both directions
-        // velocity mode: [0, 1] only because you never want to reverse a flywheel in live test
+        // Position: bidirectional output range allows the controller to push
+        // in either direction to reach the target.
+        // Velocity: output is clamped to [0, 1] because reversing a flywheel
+        // during the live test is undesirable; reducing power to zero is sufficient.
         if (positionMode) {
             liveController.setOutputBounds(-1.0, 1.0);
         } else {
@@ -254,10 +310,10 @@ public class PIDMaster {
     }
 
     // -------------------------------------------------------------------------
-    // telemetry stuff
+    // Telemetry
     // -------------------------------------------------------------------------
 
-    /** if ticksPerRev is set, returns " (X RPM)" string to add to velocity displays */
+    /** Returns an RPM annotation string if {@code ticksPerRev} is configured. */
     private String rpmString(double ticksPerSec) {
         if (ticksPerRev > 0) {
             return String.format("  (%.1f RPM)", (ticksPerSec / ticksPerRev) * 60.0);
@@ -265,7 +321,13 @@ public class PIDMaster {
         return "";
     }
 
-    /** returns lines to show on telemetry while the tuning is running */
+    /**
+     * Returns telemetry lines describing the current tuning progress.
+     * Should be called each iteration while {@link #isTuningComplete()} is
+     * {@code false}, and also when the tuner has finished in a non-success state.
+     *
+     * @return a list of strings suitable for Driver Station telemetry
+     */
     public List<String> getTelemetryLines() {
         List<String> lines = new ArrayList<>();
         switch (phase) {
@@ -287,13 +349,14 @@ public class PIDMaster {
                 break;
             case TIMED_OUT:
                 lines.add("=== Tuning TIMED OUT ===");
-                lines.add("Didn't oscillate enough.");
-                lines.add("Try: increase RELAY_AMPLITUDE, lower target,");
-                lines.add("or check motor name and wiring.");
+                lines.add("Insufficient oscillation cycles were collected.");
+                lines.add("Increase RELAY_AMPLITUDE, reduce the target value,");
+                lines.add("or verify motor name and encoder wiring.");
                 break;
             case FAILED:
                 lines.add("=== Tuning FAILED ===");
-                lines.add("Not enough amplitude. Try increasing RELAY_AMPLITUDE.");
+                lines.add("Oscillation amplitude was too small to compute a result.");
+                lines.add("Increase RELAY_AMPLITUDE and retry.");
                 break;
             case RESULTS:
                 lines.addAll(getResultTelemetryLines());
@@ -302,11 +365,16 @@ public class PIDMaster {
         return lines;
     }
 
-    /** returns the final results with all 6 candidate gain sets */
+    /**
+     * Returns the relay-test result and the full list of candidate gain sets.
+     * Only valid after {@link #isTuningSuccessful()} returns {@code true}.
+     *
+     * @return a list of strings suitable for Driver Station telemetry
+     */
     public List<String> getResultTelemetryLines() {
         List<String> lines = new ArrayList<>();
         if (result == null || candidates == null) {
-            lines.add("(no result yet)");
+            lines.add("(no result available)");
             return lines;
         }
 
@@ -321,30 +389,30 @@ public class PIDMaster {
             lines.add(gains.toString());
         }
         lines.add("");
-        lines.add("Copy a candidate into your code.");
+        lines.add("Copy the chosen gains into your subsystem code.");
         lines.add(positionMode
-                ? "Hold A to live-test 'no overshoot'."
-                : "Hold A to live-test 'classic ZN'.");
+                ? "Hold A to live-test the 'no overshoot' candidate."
+                : "Hold A to live-test the 'classic ZN' candidate.");
         return lines;
     }
 
     // -------------------------------------------------------------------------
-    // live test
+    // Live test
     // -------------------------------------------------------------------------
 
     /**
-     * runs one iteration of the live test
-     * driver holds gamepad A to activate this
+     * Runs one iteration of the live test using the default candidate gains.
+     * Position mode uses the "no overshoot" candidate; velocity mode uses
+     * "classic ZN". Call this each loop iteration while the driver holds the
+     * live-test trigger.
      *
-     * uses the "no overshoot" candidate for position, "classic ZN" for velocity
-     *
-     * @param now current time in seconds
-     * @return telemetry lines showing whats happening
+     * @param now the current OpMode runtime in seconds
+     * @return telemetry lines describing the live-test state
      */
     public List<String> liveTestStep(double now) {
         List<String> lines = new ArrayList<>();
         if (liveController == null) {
-            lines.add("(can't live test - tuning not done yet)");
+            lines.add("(live test unavailable — tuning has not completed successfully)");
             return lines;
         }
 
@@ -359,17 +427,22 @@ public class PIDMaster {
 
         lines.add("=== LIVE TEST ACTIVE ===");
         if (positionMode) {
-            lines.add(String.format("Position: %.0f  Setpoint: %.1f  Error: %.1f", measurement, setpoint, setpoint - measurement));
+            lines.add(String.format("Position: %.0f  Setpoint: %.1f  Error: %.1f",
+                    measurement, setpoint, setpoint - measurement));
         } else {
             lines.add(String.format("Velocity: %.1f ticks/s%s", measurement, rpmString(measurement)));
             lines.add(String.format("Target:   %.1f ticks/s%s", setpoint, rpmString(setpoint)));
-            lines.add(String.format("Error:    %.1f ticks/s%s", setpoint - measurement, rpmString(Math.abs(setpoint - measurement))));
+            lines.add(String.format("Error:    %.1f ticks/s%s", setpoint - measurement,
+                    rpmString(Math.abs(setpoint - measurement))));
         }
         lines.add(String.format("Output power: %.3f", output));
         return lines;
     }
 
-    /** call this when driver releases A to stop the live test */
+    /**
+     * Stops the live test if it is currently running. Call this when the
+     * driver releases the live-test trigger.
+     */
     public void stopLiveTest() {
         if (liveTestRunning) {
             motor.setPower(0);
@@ -377,7 +450,10 @@ public class PIDMaster {
         }
     }
 
-    /** stop the motor, call this at the end of the opmode */
+    /**
+     * Commands the motor to zero power. Call this at the end of the OpMode's
+     * {@code runOpMode()} method.
+     */
     public void stop() {
         motor.setPower(0);
     }

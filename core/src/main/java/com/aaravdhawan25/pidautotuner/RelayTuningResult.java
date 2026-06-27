@@ -1,28 +1,49 @@
 package com.aaravdhawan25.pidautotuner;
 
 /**
- * holds the output of the relay test
- * just Ku and Tu basically plus some extra info
+ * Holds the output of a completed relay-feedback test, including the ultimate
+ * gain, ultimate period, and the intermediate measurements from which they
+ * were derived.
  *
- * Ku = ultimate gain (how aggressive you can go before it goes unstable)
- * Tu = ultimate period (how long one full oscillation takes in seconds)
- *
- * these get fed into ZieglerNicholsCalculator to get actual kP/kI/kD
+ * <p>Produced by {@link RelayAutoTuner#computeResult()} and consumed by
+ * {@link ZieglerNicholsCalculator#computeCandidates} to generate PID gain
+ * candidates.
  */
 public class RelayTuningResult {
 
-    /** ultimate gain - computed as 4*relayAmplitude / (pi * oscillationAmplitude) */
+    /**
+     * Ultimate gain {@code Ku}, computed as {@code 4d / (π · a)}, where
+     * {@code d} is the relay amplitude and {@code a} is the average
+     * half-amplitude of the sustained oscillation.
+     */
     public final double Ku;
 
-    /** ultimate period in seconds - basically how long each full oscillation took on average */
+    /**
+     * Ultimate period {@code Tu} in seconds — the average duration of one
+     * complete oscillation cycle during the relay test.
+     */
     public final double Tu;
 
-    /** half the average peak-to-peak swing of the oscillation */
+    /**
+     * Average half-amplitude of the observed oscillation, in the same units
+     * as the setpoint (encoder ticks or ticks/sec).
+     */
     public final double amplitude;
 
-    /** the relay power we used during the test (just stored for reference) */
+    /**
+     * The relay output magnitude used during the test, retained for reference
+     * and reconstruction of {@code Ku}.
+     */
     public final double relayAmplitude;
 
+    /**
+     * Constructs a relay tuning result.
+     *
+     * @param Ku             ultimate gain
+     * @param Tu             ultimate period in seconds
+     * @param amplitude      average half-amplitude of the oscillation
+     * @param relayAmplitude relay output magnitude used during the test
+     */
     public RelayTuningResult(double Ku, double Tu, double amplitude, double relayAmplitude) {
         this.Ku = Ku;
         this.Tu = Tu;

@@ -4,50 +4,56 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * figures out kF (feedforward gain) for velocity control
+ * Identifies the feedforward gain {@code kF} for a velocity-controlled mechanism
+ * via open-loop characterisation.
  *
- * so the relay test tells us how the system responds to changes but
- * it doesnt tell us how much power we need to just hold a steady speed.
- * thats what kF is for - its basically "how much power does this motor
- * need at this speed to stay there without the PID having to fight it"
+ * <p>Relay feedback identifies closed-loop dynamics but does not quantify the
+ * power required to sustain a given velocity at zero tracking error. This class
+ * addresses that by recording (power, steady-state velocity) pairs obtained by
+ * running the motor open-loop at several fixed power levels. The feedforward
+ * gain is then computed as the least-squares slope of the line
+ * {@code power = kF · velocity} constrained to pass through the origin:
  *
- * how it works:
- * spin the motor at a few different fixed power levels (like 0.5, 0.75, 1.0)
- * wait for it to settle
- * record (power, velocity) pairs
- * fit a line through the origin: power = kF * velocity
- * slope of that line = kF
+ * <pre>
+ *   kF = Σ(power · velocity) / Σ(velocity²)
+ * </pre>
  *
- * the math is just least squares regression but through the origin
- * which simplifies to kF = sum(p*v) / sum(v*v)
+ * <p>For a single test point at full power this reduces to the familiar
+ * {@code kF = 1 / maxVelocity}.
  */
 public class FeedforwardCharacterizer {
 
     private final List<double[]> samples = new ArrayList<>();
 
     /**
-     * add a data point - call this once per power level after the
-     * motor has settled (wait like 1-2 seconds at each power level)
+     * Records one characterisation sample. Call this once per power level
+     * after the motor velocity has settled (typically 1–2 seconds at each level).
      *
-     * @param power               the motor power you tested (0.5, 0.75, 1.0 etc)
-     * @param steadyStateVelocity how fast it was going after it settled (ticks/sec)
+     * @param power               the open-loop power applied (e.g. 0.5, 0.75, 1.0)
+     * @param steadyStateVelocity the resulting steady-state velocity in ticks/sec;
+     *                            zero-velocity samples are silently discarded to
+     *                            avoid numerical singularities
      */
     public void addSample(double power, double steadyStateVelocity) {
         if (steadyStateVelocity == 0) {
-            return; // skip this, would cause divide by zero issues later
+            return;
         }
         samples.add(new double[]{power, steadyStateVelocity});
     }
 
+    /**
+     * Returns the number of valid samples currently held.
+     */
     public int sampleCount() {
         return samples.size();
     }
 
     /**
-     * computes kF using least squares through the origin
-     * basically: kF = sum(power * velocity) / sum(velocity^2)
+     * Computes the feedforward gain {@code kF} using ordinary least squares
+     * regression through the origin across all recorded samples.
      *
-     * @return kF, or NaN if we have no samples yet
+     * @return the estimated {@code kF}, or {@link Double#NaN} if no valid
+     *         samples have been added
      */
     public double computeKf() {
         if (samples.isEmpty()) {
@@ -57,9 +63,9 @@ public class FeedforwardCharacterizer {
         double numerator = 0;
         double denominator = 0;
         for (double[] sample : samples) {
-            double power = sample[0];
+            double power    = sample[0];
             double velocity = sample[1];
-            numerator += power * velocity;
+            numerator   += power * velocity;
             denominator += velocity * velocity;
         }
 

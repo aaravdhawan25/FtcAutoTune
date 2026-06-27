@@ -4,42 +4,63 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * takes the Ku and Tu from the relay test and turns them into
- * actual pid gains using ziegler nichols rules
+ * Converts the ultimate gain {@code Ku} and ultimate period {@code Tu} produced
+ * by {@link RelayAutoTuner} into candidate PID(F) gain sets using the
+ * Ziegler–Nichols closed-loop tuning rules and common variants thereof.
  *
- * basically there are like 100 years of control theory research that
- * figured out these formulas so we just use them lol
+ * <p>All rules follow the standard parameterisation:
+ * <pre>
+ *   Kp = α · Ku
+ *   Ki = Kp / Ti     where Ti is a fraction of Tu
+ *   Kd = Kp · Td     where Td is a fraction of Tu
+ * </pre>
  *
- * reference: ziegler and nichols 1942 (yeah 1942, still works tho)
- * and astrom hagglund 1984 for the relay method part
+ * <p>References:
+ * <ul>
+ *   <li>Ziegler, J.G. and Nichols, N.B. (1942). "Optimum Settings for Automatic
+ *       Controllers." <i>Transactions of the ASME</i>, 64, 759–768.</li>
+ *   <li>Åström, K.J. and Hägglund, T. (1984). "Automatic tuning of simple
+ *       regulators with specifications on phase and amplitude margins."
+ *       <i>Automatica</i>, 20(5), 645–651.</li>
+ * </ul>
  */
 public class ZieglerNicholsCalculator {
 
     private ZieglerNicholsCalculator() {}
 
     /**
-     * same as the other computeCandidates but defaults to including integral
-     * (which you probably dont want for flywheels btw, use the other one
-     * and pass false for includeIntegral)
+     * Computes candidate gain sets using the default behaviour of
+     * {@link #computeCandidates(RelayTuningResult, double, boolean)},
+     * with integral terms included.
+     *
+     * @param result the output of a completed {@link RelayAutoTuner} test
+     * @param kF     feedforward gain applied to every candidate (0 if unused)
+     * @return a list of six labeled gain sets ordered from conservative to aggressive
      */
     public static List<PIDGains> computeCandidates(RelayTuningResult result, double kF) {
         return computeCandidates(result, kF, true);
     }
 
     /**
-     * this is the main function, gives you 6 different gain options
-     * from most conservative to most aggressive
+     * Computes six candidate PID(F) gain sets from the relay-test result.
      *
-     * kF just gets passed through to every candidate since relay feedback
-     * doesnt measure feedforward, you have to get that separately from
-     * the feedforward sweep
+     * <p>When {@code includeIntegral} is {@code false}, the PD-only
+     * Ziegler–Nichols rule family is used and every candidate has
+     * {@code kI = 0}. This is the recommended setting for velocity and
+     * flywheel loops, where the feedforward term {@code kF} already
+     * eliminates steady-state error and an integral term primarily
+     * introduces windup risk.
      *
-     * @param result          the Ku and Tu from RelayAutoTuner
-     * @param kF              feedforward gain (0 if youre not using it)
-     * @param includeIntegral false = all kI values are 0 (PD only rules).
-     *                        for flywheels you almost always want false here
-     *                        because kF handles steady state and integral
-     *                        just causes windup which is really annoying
+     * <p>The candidate list is ordered so that index 2 is the "no overshoot"
+     * variant and index 4 is the "classic ZN" variant in both the PD-only
+     * and full-PID families, allowing callers to reference a consistent
+     * index regardless of the {@code includeIntegral} setting.
+     *
+     * @param result          the output of a completed {@link RelayAutoTuner} test
+     * @param kF              feedforward gain applied to every candidate (0 if unused)
+     * @param includeIntegral {@code false} to use PD-only rules with {@code kI = 0};
+     *                        {@code true} to use the full PID rule family
+     * @return a list of six labeled gain sets ordered from conservative to aggressive
      */
     public static List<PIDGains> computeCandidates(RelayTuningResult result, double kF, boolean includeIntegral) {
         double Ku = result.Ku;
@@ -48,72 +69,48 @@ public class ZieglerNicholsCalculator {
         List<PIDGains> candidates = new ArrayList<>();
 
         if (!includeIntegral) {
-            // PD only rules (no integral at all)
-            // index 2 is "no overshoot" and index 4 is "classic ZN"
-            // keeping them at the same indexes as the PID list below so
-            // the code that grabs candidates.get(4) still works right
-
-            // just proportional, no d term, usually has steady state error
-            candidates.add(pid("P only", 0.5 * Ku, 0, 0, kF));
-
-            // very gentle, barely does anything tbh
-            candidates.add(pid("PD (very gentle)", 0.3 * Ku, 0, 0.3 * Ku * (Tu / 4.0), kF));
-
-            // good for arms and lifts where you really dont want overshoot
-            candidates.add(pid("PD (no overshoot)", 0.4 * Ku, 0, 0.4 * Ku * (Tu / 3.0), kF));
-
-            // slightly more aggressive, still pretty safe
-            candidates.add(pid("PD (some overshoot)", 0.6 * Ku, 0, 0.6 * Ku * (Tu / 4.0), kF));
-
-            // this is the classic ziegler nichols PD formula, works great for flywheels
-            candidates.add(pid("PD (classic ZN)", 0.8 * Ku, 0, 0.8 * Ku * (Tu / 8.0), kF));
-
-            // go fast and break things basically lol, test carefully
-            candidates.add(pid("PD (aggressive)", 1.2 * Ku, 0, 1.2 * Ku * (Tu / 8.0), kF));
-
+            // PD-only rule family (kI = 0 throughout).
+            // Index alignment: 0 = P only, 1 = very gentle, 2 = no overshoot,
+            //                  3 = some overshoot, 4 = classic ZN, 5 = aggressive.
+            candidates.add(pid("P only",              0.5  * Ku, 0, 0,                        kF));
+            candidates.add(pid("PD (very gentle)",    0.3  * Ku, 0, 0.3  * Ku * (Tu / 4.0),  kF));
+            candidates.add(pid("PD (no overshoot)",   0.4  * Ku, 0, 0.4  * Ku * (Tu / 3.0),  kF));
+            candidates.add(pid("PD (some overshoot)", 0.6  * Ku, 0, 0.6  * Ku * (Tu / 4.0),  kF));
+            candidates.add(pid("PD (classic ZN)",     0.8  * Ku, 0, 0.8  * Ku * (Tu / 8.0),  kF));
+            candidates.add(pid("PD (aggressive)",     1.2  * Ku, 0, 1.2  * Ku * (Tu / 8.0),  kF));
             return candidates;
         }
 
-        // PID rules (has integral term)
-        // only use these if you set TUNE_INTEGRAL_TERM=true in TuningConfig
-
-        // just P, boring but sometimes its all you need
+        // Full PID rule family.
+        // Index alignment mirrors the PD family: 0 = P only, 2 = no overshoot,
+        //                                        4 = classic ZN, 5 = Pessen.
         candidates.add(pid("P only", 0.5 * Ku, 0, 0, kF));
 
-        // PI - adds integral to fix steady state error but no derivative
         {
             double Kp = 0.45 * Ku;
             double Ti = Tu / 1.2;
             candidates.add(pid("PI", Kp, Kp / Ti, 0, kF));
         }
-
-        // smoothest full PID option, basically no overshoot at all
         {
             double Kp = 0.2 * Ku;
             double Ti = Tu / 2.0;
             double Td = Tu / 3.0;
             candidates.add(pid("PID (no overshoot)", Kp, Kp / Ti, Kp * Td, kF));
         }
-
-        // a bit faster, small overshoot but settles quick
         {
             double Kp = 0.33 * Ku;
             double Ti = Tu / 2.0;
             double Td = Tu / 3.0;
             candidates.add(pid("PID (some overshoot)", Kp, Kp / Ti, Kp * Td, kF));
         }
-
-        // the OG ziegler nichols formula, fast but kind of aggressive
         {
             double Kp = 0.6 * Ku;
             double Ti = Tu / 2.0;
             double Td = Tu / 8.0;
             candidates.add(pid("PID (classic ZN)", Kp, Kp / Ti, Kp * Td, kF));
         }
-
-        // pessen integral rule, fastest response but most overshoot
-        // definitely test this with the live test before using it in a match lol
         {
+            // Pessen Integral Rule — highest bandwidth, most overshoot.
             double Kp = 0.7 * Ku;
             double Ti = 0.4 * Tu;
             double Td = 0.15 * Tu;
