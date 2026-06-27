@@ -15,51 +15,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Drives the full relay-feedback velocity auto-tuning workflow for a
- * <b>dual-motor</b> mechanism (e.g. a two-flywheel shooter, dual intake
- * rollers, or a differential-drive velocity loop).
+ * same as PIDMaster but for TWO motors at once
+ * both motors get the exact same power output throughout the whole tune
+ * so the gains work equally well for both
  *
- * <p>Both motors are driven with the same output throughout the relay test
- * and feedforward sweep. The relay test uses the <b>average absolute
- * velocity</b> of both motors as the measurement, so both wheels must be
- * spinning to get a valid tune. The resulting kP/kI/kD/kF are applied
- * identically to both motors in the live test.
+ * designed for dual flywheel shooters and stuff like that where you have
+ * two motors facing each other (which is why REVERSED_2 is usually true)
  *
- * <p>Each motor has its own direction setting, since on flywheel/shooter
- * setups the two motors typically face each other and one must be reversed.
+ * if you only have one encoder plugged in (DUAL_ENCODERS=false), we just
+ * read from motor 1's encoder and motor 2 gets the same power but we
+ * ignore its encoder. this is totally fine and actually the common setup.
  *
- * <h2>Usage</h2>
- * <pre>{@code
- * DualMotorPIDMaster pid = new DualMotorPIDMaster(
- *         hardwareMap,
- *         TuningConfig.MOTOR_NAME,   TuningConfig.REVERSED,
- *         TuningConfig.MOTOR_NAME_2, TuningConfig.REVERSED_2,
- *         TuningConfig.VELOCITY_TARGET_TICKS_PER_SEC,
- *         TuningConfig.VELOCITY_HYSTERESIS_TICKS_PER_SEC,
- *         TuningConfig.RELAY_AMPLITUDE,
- *         TuningConfig.CYCLES_TO_COLLECT, TuningConfig.CYCLES_TO_IGNORE,
- *         TuningConfig.RELAY_TEST_TIMEOUT_S,
- *         TuningConfig.FEEDFORWARD_TEST_POWERS,
- *         TuningConfig.FEEDFORWARD_SETTLE_TIME_S,
- *         TuningConfig.TUNE_INTEGRAL_TERM);
- *
- * while (opModeIsActive() && !pid.isTuningComplete()) {
- *     pid.tuningStep(getRuntime());
- *     for (String line : pid.getTelemetryLines()) telemetry.addLine(line);
- *     telemetry.update();
- * }
- *
- * while (opModeIsActive()) {
- *     telemetry.clearAll();
- *     for (String line : pid.getResultTelemetryLines()) telemetry.addLine(line);
- *     if (gamepad1.a) pid.liveTestStep(getRuntime()); else pid.stopLiveTest();
- *     telemetry.update();
- * }
- * pid.stop();
- * }</pre>
+ * important: we use Math.abs() on all velocity readings here
+ * this is why this class worked fine even before we fixed PIDMaster lol
  */
 public class DualMotorPIDMaster {
 
+    // same phase enum as PIDMaster, just tracks where we are in the tuning
     private enum Phase {
         RELAY_TEST,
         FEEDFORWARD_SWEEP,
@@ -85,39 +57,41 @@ public class DualMotorPIDMaster {
 
     private Phase phase = Phase.RELAY_TEST;
 
-    // Feedforward sweep state
+    // feedforward sweep tracking
     private final FeedforwardCharacterizer ff = new FeedforwardCharacterizer();
     private int ffPowerIndex = 0;
     private double ffPhaseStartTime = -1;
     private double ffLastMeasurement = 0;
 
-    // Results
+    // results
     private RelayTuningResult result;
     private List<PIDGains> candidates;
     private double kF = 0.0;
 
-    // Live test
+    // live test
     private PIDFController liveController;
     private boolean liveTestRunning = false;
 
     /**
-     * @param hardwareMap            from the OpMode
-     * @param motorName1             hardware config name of the first motor
-     * @param reversed1              true to reverse the first motor's direction
-     * @param motorName2             hardware config name of the second motor
-     * @param reversed2              true to reverse the second motor's direction
-     * @param targetVelocity         target velocity in ticks/sec for both motors
-     * @param hysteresis             deadband for the relay test in ticks/sec
-     * @param relayAmplitude         relay output magnitude (0-1)
+     * sets everything up for the two motor tuning
+     *
+     * @param hardwareMap            from the opmode
+     * @param motorName1             first motor hardware config name
+     * @param reversed1              reverse motor 1 if needed
+     * @param motorName2             second motor hardware config name
+     * @param reversed2              usually true for opposing face flywheels
+     * @param targetVelocity         target speed in ticks/sec for both motors
+     * @param hysteresis             relay deadband in ticks/sec
+     * @param relayAmplitude         bang-bang power magnitude (0-1)
      * @param cyclesToCollect        oscillation cycles to average
-     * @param cyclesToIgnore         initial cycles to discard
-     * @param relayTestTimeoutS      safety timeout for the relay test
-     * @param feedforwardTestPowers  open-loop powers for kF characterization
-     * @param feedforwardSettleTimeS settle time per power level
-     * @param tuneIntegralTerm       false = use PD-only rules (kI=0)
-     * @param dualEncoders           true if both motors have encoders plugged in;
-     *                               false if only motor 1 has an encoder (motor 2
-     *                               is still driven but its velocity is not measured)
+     * @param cyclesToIgnore         settling cycles to skip
+     * @param relayTestTimeoutS      give up if it doesnt oscillate by this time
+     * @param feedforwardTestPowers  powers to test for kF
+     * @param feedforwardSettleTimeS wait this long at each power before measuring
+     * @param tuneIntegralTerm       false = PD only (almost always what you want)
+     * @param dualEncoders           true = both motors have encoders and we average them.
+     *                               false = only motor 1 has encoder, motor 2 is just driven.
+     *                               if you only have one encoder plugged in use false here
      */
     public DualMotorPIDMaster(HardwareMap hardwareMap,
                                String motorName1, boolean reversed1,
@@ -159,12 +133,12 @@ public class DualMotorPIDMaster {
     }
 
     /**
-     * Returns the velocity measurement used by the relay tuner.
-     * <ul>
-     *     <li>If {@code dualEncoders = true}: average absolute velocity of both motors</li>
-     *     <li>If {@code dualEncoders = false}: absolute velocity of motor 1 only
-     *         (motor 2 still receives the same drive power, its encoder just isn't read)</li>
-     * </ul>
+     * gets the velocity measurement
+     * if both encoders: average of both motors (more accurate)
+     * if single encoder: just motor 1 (totally fine for most setups)
+     *
+     * always uses Math.abs() so negative velocity from brief reversals
+     * doesnt mess up the tuning
      */
     private double measure() {
         if (dualEncoders) {
@@ -174,14 +148,14 @@ public class DualMotorPIDMaster {
         }
     }
 
-    /** Applies the same power to both motors. */
+    /** sets both motors to the same power at the same time */
     private void setPower(double power) {
         motor1.setPower(power);
         motor2.setPower(power);
     }
 
     // -------------------------------------------------------------------------
-    // State / tuning
+    // state checks
     // -------------------------------------------------------------------------
 
     public boolean isTuningComplete() {
@@ -197,16 +171,17 @@ public class DualMotorPIDMaster {
     }
 
     /**
-     * Call once per loop iteration while {@code !isTuningComplete()}.
+     * call every loop while tuning is running
+     * handles everything automatically
      *
-     * @param now monotonically increasing time in seconds (e.g. {@code getRuntime()})
+     * @param now getRuntime() from your opmode
      */
     public void tuningStep(double now) {
         switch (phase) {
             case RELAY_TEST: {
                 double measurement = measure();
                 double output = tuner.update(measurement, now);
-                setPower(output);
+                setPower(output); // both motors get the same output
 
                 if (tuner.isFinished()) {
                     setPower(0);
@@ -229,7 +204,7 @@ public class DualMotorPIDMaster {
 
             case FEEDFORWARD_SWEEP: {
                 double power = feedforwardTestPowers[ffPowerIndex];
-                setPower(power);
+                setPower(power); // again, same power to both
                 ffLastMeasurement = measure();
 
                 if (now - ffPhaseStartTime >= feedforwardSettleTimeS) {
@@ -257,7 +232,7 @@ public class DualMotorPIDMaster {
         kF = Double.isNaN(rawKf) ? 0.0 : rawKf;
         candidates = ZieglerNicholsCalculator.computeCandidates(result, kF, tuneIntegralTerm);
 
-        // index 4 = "classic ZN" -- good default for flywheel/velocity loops
+        // index 4 = classic ZN, good default for flywheels
         PIDGains liveTestGains = candidates.get(4);
         liveController = PIDFController.fromGains(liveTestGains);
         liveController.setOutputBounds(-1.0, 1.0);
@@ -266,7 +241,7 @@ public class DualMotorPIDMaster {
     }
 
     // -------------------------------------------------------------------------
-    // Telemetry
+    // telemetry
     // -------------------------------------------------------------------------
 
     public List<String> getTelemetryLines() {
@@ -280,7 +255,7 @@ public class DualMotorPIDMaster {
                 if (dualEncoders) {
                     lines.add(String.format("Motor 2 velocity: %.1f", Math.abs(motor2.getVelocity())));
                 } else {
-                    lines.add("Motor 2 velocity: (no encoder)");
+                    lines.add("Motor 2 velocity: (no encoder plugged in)");
                 }
                 lines.add(String.format("Target (ticks/s): %.1f", targetVelocity));
                 lines.add(String.format("Cycles collected: %d / %d",
@@ -301,13 +276,13 @@ public class DualMotorPIDMaster {
                 break;
             case TIMED_OUT:
                 lines.add("=== Tuning TIMED OUT ===");
-                lines.add("Didn't complete enough oscillation cycles.");
-                lines.add("Try increasing RELAY_AMPLITUDE, adjusting the");
-                lines.add("target velocity, or check wiring on both motors.");
+                lines.add("Didn't oscillate enough.");
+                lines.add("Try: increase RELAY_AMPLITUDE, lower target velocity,");
+                lines.add("or check wiring on both motors.");
                 break;
             case FAILED:
                 lines.add("=== Tuning FAILED ===");
-                lines.add("Not enough oscillation amplitude was measured.");
+                lines.add("Not enough amplitude. Try increasing RELAY_AMPLITUDE.");
                 break;
             case RESULTS:
                 lines.addAll(getResultTelemetryLines());
@@ -328,31 +303,31 @@ public class DualMotorPIDMaster {
         lines.add(String.format("Ku=%.6f  Tu=%.4fs", result.Ku, result.Tu));
         lines.add(String.format("kF=%.6f (samples: %d)", kF, ff.sampleCount()));
         lines.add("");
-        lines.add("=== Candidate Gains (apply to BOTH motors) ===");
+        lines.add("=== Candidate Gains (same for both motors) ===");
         for (PIDGains gains : candidates) {
             lines.add(gains.toString());
         }
         lines.add("");
-        lines.add("These gains run identically on both motors.");
-        lines.add("Hold A to live-test 'classic ZN' on both motors.");
+        lines.add("These gains go on BOTH motors.");
+        lines.add("Hold A to live-test classic ZN on both motors.");
         return lines;
     }
 
     // -------------------------------------------------------------------------
-    // Live test
+    // live test
     // -------------------------------------------------------------------------
 
     /**
-     * Runs one iteration of the live test with the "classic ZN" candidate,
-     * applying the same output to both motors simultaneously.
+     * runs the live test with classic ZN gains
+     * both motors run at the same time with the same output
      *
-     * @param now monotonically increasing time in seconds
-     * @return telemetry lines for the live-test state
+     * @param now getRuntime()
+     * @return telemetry lines
      */
     public List<String> liveTestStep(double now) {
         List<String> lines = new ArrayList<>();
         if (liveController == null) {
-            lines.add("(live test unavailable -- tuning not complete)");
+            lines.add("(can't live test - tuning not done yet)");
             return lines;
         }
 
@@ -363,7 +338,7 @@ public class DualMotorPIDMaster {
 
         double measurement = measure();
         double output = liveController.calculate(targetVelocity, measurement, now);
-        setPower(output);
+        setPower(output); // same power to both motors
 
         lines.add("=== LIVE TEST ACTIVE (Dual Motor) ===");
         lines.add(String.format("Measurement: %.1f  Target: %.1f  Error: %.1f",

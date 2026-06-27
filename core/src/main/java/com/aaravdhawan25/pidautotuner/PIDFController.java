@@ -1,18 +1,19 @@
 package com.aaravdhawan25.pidautotuner;
 
 /**
- * A generic PIDF controller, decoupled from any FTC SDK classes so it can be
- * unit tested on a desktop JVM and reused both by the tuner OpModes and by
- * the user's final subsystem code.
+ * a basic PIDF controller that you can use in your actual robot code
+ * after you get the gains from the tuner
  *
- * <p>Two typical use cases:
- * <ul>
- *     <li><b>Position control</b> (e.g. run-to-position arm/lift): leave
- *     {@code kF} at 0, or set it to a constant gravity-feedforward term.</li>
- *     <li><b>Velocity control</b> (e.g. flywheel): {@code kF} is multiplied
- *         by the target velocity, representing "how much power is needed to
- *         sustain this speed with zero error".</li>
- * </ul>
+ * works for both position control (arms, lifts) and velocity control
+ * (flywheels, intakes)
+ *
+ * for position: set kF to 0 unless you need gravity compensation
+ * for velocity: kF is how much power it takes to hold the target speed
+ *               basically feedforward so the P term doesnt have to do
+ *               all the work
+ *
+ * this class has no FTC SDK stuff in it so you can test it on a laptop
+ * if you want to (its just math)
  */
 public class PIDFController {
 
@@ -21,10 +22,10 @@ public class PIDFController {
     private double kD;
     private double kF;
 
-    /** Optional clamp applied to the integral accumulator to prevent windup. */
+    /** clamps the integral so it doesnt go crazy (windup is really bad) */
     private double integralSumMax = Double.POSITIVE_INFINITY;
 
-    /** Optional clamp applied to the final output (e.g. motor power is [-1, 1]). */
+    /** clamps the final output, motor power has to be between -1 and 1 */
     private double outputMin = -1.0;
     private double outputMax = 1.0;
 
@@ -59,7 +60,11 @@ public class PIDFController {
         this.outputMax = max;
     }
 
-    /** Resets the integral accumulator and derivative history. Call this whenever the target changes. */
+    /**
+     * call this when the target changes to clear out old integral/derivative
+     * state. if you dont call this the controller might act weird when you
+     * switch targets
+     */
     public void reset() {
         errorSum = 0.0;
         lastError = 0.0;
@@ -67,22 +72,23 @@ public class PIDFController {
     }
 
     /**
-     * Computes the controller output.
+     * the main function, call this every loop
      *
-     * @param target          desired position or velocity
-     * @param measurement     current measured position or velocity
-     * @param timestampSeconds monotonically increasing timestamp, in seconds
-     * @return the control output, clamped to [outputMin, outputMax]
+     * @param target           where you want to be
+     * @param measurement      where you actually are
+     * @param timestampSeconds current time in seconds (getRuntime() works)
+     * @return motor power to apply, already clamped to [outputMin, outputMax]
      */
     public double calculate(double target, double measurement, double timestampSeconds) {
         double error = target - measurement;
 
         double dt;
         if (Double.isNaN(lastTimestamp)) {
+            // first call so there's no dt yet
             dt = 0.0;
         } else {
             dt = timestampSeconds - lastTimestamp;
-            if (dt <= 0) dt = 0.0;
+            if (dt <= 0) dt = 0.0; // just in case time goes backward somehow idk
         }
 
         if (dt > 0) {
@@ -90,6 +96,8 @@ public class PIDFController {
             errorSum = clamp(errorSum, -integralSumMax, integralSumMax);
         }
 
+        // derivative = how fast the error is changing
+        // if dt is 0 we just skip it so we dont divide by zero
         double derivative = (dt > 0) ? (error - lastError) / dt : 0.0;
 
         double output = kP * error + kI * errorSum + kD * derivative + kF * target;

@@ -1,21 +1,26 @@
 package com.aaravdhawan25.pidautotuner;
 
 /**
- * Raw output of a relay-feedback test: the ultimate gain and period,
- * plus the measurements used to compute them.
+ * holds the output of the relay test
+ * just Ku and Tu basically plus some extra info
+ *
+ * Ku = ultimate gain (how aggressive you can go before it goes unstable)
+ * Tu = ultimate period (how long one full oscillation takes in seconds)
+ *
+ * these get fed into ZieglerNicholsCalculator to get actual kP/kI/kD
  */
 public class RelayTuningResult {
 
-    /** Ultimate gain, computed as {@code 4*d / (pi*a)}. */
+    /** ultimate gain - computed as 4*relayAmplitude / (pi * oscillationAmplitude) */
     public final double Ku;
 
-    /** Ultimate period, in seconds -- the period of the sustained oscillation. */
+    /** ultimate period in seconds - basically how long each full oscillation took on average */
     public final double Tu;
 
-    /** Oscillation amplitude (half the average peak-to-peak swing), in setpoint units. */
+    /** half the average peak-to-peak swing of the oscillation */
     public final double amplitude;
 
-    /** The relay output amplitude {@code d} that was used to produce the oscillation. */
+    /** the relay power we used during the test (just stored for reference) */
     public final double relayAmplitude;
 
     public RelayTuningResult(double Ku, double Tu, double amplitude, double relayAmplitude) {

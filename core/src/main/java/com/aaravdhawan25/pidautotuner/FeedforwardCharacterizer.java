@@ -4,37 +4,37 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Computes the feedforward gain {@code kF} for velocity control.
+ * figures out kF (feedforward gain) for velocity control
  *
- * <p>Relay feedback (see {@link RelayAutoTuner}) measures the dynamics of the
- * system but does not by itself tell you how much power is needed to sustain
- * a given velocity with zero error -- that's the feedforward term. This class
- * characterizes it separately: drive the motor open-loop at one or more fixed
- * power levels, let the velocity settle, and record (power, steady-state
- * velocity) pairs. {@code kF} is then the slope of the best-fit line through
- * the origin: {@code power = kF * velocity}.
+ * so the relay test tells us how the system responds to changes but
+ * it doesnt tell us how much power we need to just hold a steady speed.
+ * thats what kF is for - its basically "how much power does this motor
+ * need at this speed to stay there without the PID having to fight it"
  *
- * <p>For a single test point (the simplest case -- run the motor at full
- * power and record the steady-state velocity), this reduces to the familiar
- * {@code kF = 1.0 / maxVelocity} (in power-per-tick/sec units).
+ * how it works:
+ * spin the motor at a few different fixed power levels (like 0.5, 0.75, 1.0)
+ * wait for it to settle
+ * record (power, velocity) pairs
+ * fit a line through the origin: power = kF * velocity
+ * slope of that line = kF
+ *
+ * the math is just least squares regression but through the origin
+ * which simplifies to kF = sum(p*v) / sum(v*v)
  */
 public class FeedforwardCharacterizer {
 
     private final List<double[]> samples = new ArrayList<>();
 
     /**
-     * Record one (power, steady-state velocity) sample. Call this once per
-     * power level tested, after the velocity has settled (e.g. after running
-     * at that power for ~1-2 seconds).
+     * add a data point - call this once per power level after the
+     * motor has settled (wait like 1-2 seconds at each power level)
      *
-     * @param power              open-loop motor power applied, e.g. 0.5, 0.75, 1.0
-     * @param steadyStateVelocity the resulting steady-state velocity, in the
-     *                            same units (ticks/sec) the controller's
-     *                            target velocity will be specified in
+     * @param power               the motor power you tested (0.5, 0.75, 1.0 etc)
+     * @param steadyStateVelocity how fast it was going after it settled (ticks/sec)
      */
     public void addSample(double power, double steadyStateVelocity) {
         if (steadyStateVelocity == 0) {
-            return; // avoid div-by-zero / degenerate samples
+            return; // skip this, would cause divide by zero issues later
         }
         samples.add(new double[]{power, steadyStateVelocity});
     }
@@ -44,10 +44,10 @@ public class FeedforwardCharacterizer {
     }
 
     /**
-     * Computes kF as the least-squares slope of {@code power = kF * velocity}
-     * through the origin.
+     * computes kF using least squares through the origin
+     * basically: kF = sum(power * velocity) / sum(velocity^2)
      *
-     * @return kF, or {@code Double.NaN} if no valid samples have been recorded
+     * @return kF, or NaN if we have no samples yet
      */
     public double computeKf() {
         if (samples.isEmpty()) {
